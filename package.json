@@ -1,0 +1,33 @@
+{
+  "name": "jukebox-app",
+  "version": "1.2.0",
+  "description": "Application Jukebox Web avec support Navidrome et Soulseek",
+  "main": "jukebox-server.js",
+  "scripts": {
+    "start": "node jukebox-server.js",
+    "dev": "nodemon jukebox-server.js",
+    "test": "node --check jukebox-server.js && node --check qrcode.js"
+  },
+  "keywords": [
+    "jukebox",
+    "music",
+    "playlist",
+    "navidrome",
+    "soulseek"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.18.2",
+    "music-metadata": "^11.15.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

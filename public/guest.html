@@ -1,0 +1,1443 @@
+<!DOCTYPE html>
+<!-- Jukebox — page invite — Version 1.4.0 (2026-09-09)
+     1.4.0 — Cinq secondes apres un ajout, la page revient a son etat
+             "sans recherche" (champ vide, resultats effaces).
+     1.3.0 — Plus de bandeau d'etat permanent : le delai et le quota se
+             lisent dans les tuiles. Le bandeau ne sert plus qu'aux
+             evenements ponctuels (ajout confirme, doublon, refus).
+     1.2.0 — La recherche reste ouverte pendant le delai d'attente : les
+             resultats s'affichent, les boutons "+ Ajouter" se debloquent
+             tout seuls des que le delai est echu.
+     1.1.0 — L'invite peut retirer une de ses chansons pas encore jouee ;
+             son credit (quota + delai d'ajout) lui est rendu.
+             Un seul decompte a l'ecran (la tuile "Prochain ajout"), qui
+             rappelle le delai actuellement configure.
+     1.0.0 — Version initiale -->
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🎵 Jukebox - Ajouter Musique</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #fff;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    .header h1 {
+      font-size: 32px;
+      margin-bottom: 10px;
+    }
+
+    .header p {
+      color: #aaa;
+      font-size: 14px;
+    }
+
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 15px;
+      padding: 25px;
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      margin-bottom: 20px;
+    }
+
+    .section-title {
+      font-size: 18px;
+      font-weight: bold;
+      margin-bottom: 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .info-box {
+      background: rgba(102, 126, 234, 0.15);
+      border: 1px solid rgba(102, 126, 234, 0.3);
+      padding: 15px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .info-box.error {
+      background: rgba(245, 87, 108, 0.15);
+      border-color: rgba(245, 87, 108, 0.3);
+    }
+
+    .info-box.success {
+      background: rgba(52, 211, 153, 0.15);
+      border-color: rgba(52, 211, 153, 0.3);
+    }
+
+    .guest-id {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 12px;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 14px;
+      word-break: break-all;
+      margin-bottom: 15px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .stat-value.countdown {
+      color: #fbbf24;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-value.ready {
+      color: #34d399;
+    }
+
+    .stat-value.quota-full {
+      color: #f5576c;
+      font-size: 15px;
+      line-height: 1.9;
+    }
+
+    .stat-box {
+      background: rgba(255, 255, 255, 0.05);
+      padding: 15px;
+      border-radius: 8px;
+      text-align: center;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: bold;
+      color: #667eea;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #aaa;
+      margin-top: 5px;
+    }
+
+    .search-form {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    /* Un code se lit lettre par lettre : bien espacé */
+    .code-input {
+      letter-spacing: 3px;
+      font-weight: 600;
+    }
+
+    .code-input::placeholder {
+      letter-spacing: normal;
+      font-weight: 400;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: white;
+      padding: 12px 15px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    input[type="text"]::placeholder {
+      color: rgba(255, 255, 255, 0.5);
+    }
+
+    input[type="text"]:focus {
+      outline: none;
+      border-color: #667eea;
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 12px 25px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .results {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .result-item {
+      background: rgba(255, 255, 255, 0.05);
+      padding: 15px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      gap: 15px;
+      cursor: pointer;
+      transition: all 0.2s;
+      align-items: flex-start;
+    }
+
+    .result-item:hover {
+      background: rgba(255, 255, 255, 0.1);
+      transform: translateX(5px);
+      border-color: #667eea;
+    }
+
+    .result-thumbnail {
+      width: 60px;
+      height: 60px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 30px;
+      overflow: hidden;
+    }
+
+    .result-thumbnail img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .result-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .result-title {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .result-meta {
+      font-size: 12px;
+      color: #aaa;
+    }
+
+    .result-source {
+      font-size: 10px;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    .result-actions {
+      display: flex;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .result-actions button {
+      padding: 8px 15px;
+      font-size: 12px;
+      width: auto;
+      white-space: nowrap;
+    }
+
+    /* Morceau déjà dans la playlist : bouton neutre, mais lisible */
+    .result-actions button.duplicate,
+    .result-actions button.duplicate:disabled {
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      opacity: 1;
+      cursor: default;
+      color: #ccc;
+    }
+
+    .result-actions button.duplicate:hover {
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* Delai d'attente en cours : le bouton reste visible mais inerte,
+       il se rallume tout seul a la fin du decompte. */
+    .result-actions button.waiting,
+    .result-actions button.waiting:disabled {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      opacity: 1;
+      cursor: default;
+      color: #bbb;
+    }
+
+    .result-actions button.waiting:hover {
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* Confirmation d'ajout : le bouton reste lisible bien que desactive */
+    .result-actions button.added,
+    .result-actions button.added:disabled {
+      background: linear-gradient(135deg, #2ecc71 0%, #1e8449 100%);
+      opacity: 1;
+      cursor: default;
+    }
+
+    .result-actions button.added:hover {
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* Version mobile d'un resultat : tout sur une seule ligne. Titre et
+       infos se partagent la largeur, chacun tronque de son cote, pour que
+       l'artiste reste visible meme derriere un titre a rallonge. */
+    .result-compact {
+      display: none;
+      align-items: baseline;
+      gap: 6px;
+      min-width: 0;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .result-compact-title,
+    .result-compact-meta {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .result-compact-title {
+      flex: 0 1 auto;
+    }
+
+    /* Le titre passe en premier ; les infos prennent la place restante,
+       sans jamais disparaitre completement (l'artiste reste amorce). */
+    .result-compact-meta {
+      flex: 1 1 0;
+      min-width: 5em;
+      color: #aaa;
+      font-size: 12px;
+    }
+
+    .added-songs {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .added-song {
+      background: rgba(52, 211, 153, 0.1);
+      border-left: 3px solid #34d399;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .added-song-title {
+      font-weight: 500;
+    }
+
+    .added-song-artist {
+      font-size: 12px;
+      color: #aaa;
+      margin-top: 4px;
+    }
+
+    .added-song-state {
+      flex: none;
+      font-size: 11px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    button.song-remove {
+      flex: none;
+      width: auto;
+      margin: 0;
+      padding: 6px 12px;
+      font-size: 12px;
+      background: rgba(233, 79, 91, 0.18);
+      border: 1px solid rgba(233, 79, 91, 0.5);
+      color: #f3a3a9;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    button.song-remove:hover {
+      background: rgba(233, 79, 91, 0.32);
+      color: #fff;
+      box-shadow: none;
+      transform: none;
+    }
+
+    button.song-remove:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #aaa;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255, 255, 255, 0.2);
+      border-radius: 50%;
+      border-top-color: #667eea;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .search-progress {
+      margin-bottom: 20px;
+    }
+
+    .search-progress-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: #aaa;
+      margin-bottom: 8px;
+    }
+
+    .search-progress-head .spinner {
+      width: 14px;
+      height: 14px;
+      border-width: 2px;
+    }
+
+    .search-progress-time {
+      margin-left: auto;
+      font-variant-numeric: tabular-nums;
+      color: #667eea;
+      font-weight: 600;
+    }
+
+    .search-progress-track {
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+    }
+
+    .search-progress-bar {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      transition: width 0.12s linear;
+    }
+
+    .search-progress-bar.overtime {
+      background: linear-gradient(135deg, #764ba2 0%, #f0932b 100%);
+      animation: pulse-bar 1.2s ease-in-out infinite;
+    }
+
+    @keyframes pulse-bar {
+      50% { opacity: 0.55; }
+    }
+
+    .notice {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 10px;
+      text-align: left;
+    }
+
+    .notice-close {
+      flex: none;
+      background: none;
+      border: none;
+      color: inherit;
+      opacity: 0.7;
+      padding: 0 4px;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .notice-close:hover {
+      opacity: 1;
+      transform: none;
+      box-shadow: none;
+    }
+
+    button.cancel {
+      background: linear-gradient(135deg, #e94f5b 0%, #b73253 100%);
+    }
+
+    button.cancel:hover {
+      box-shadow: 0 10px 25px rgba(233, 79, 91, 0.3);
+    }
+
+    .no-results {
+      text-align: center;
+      padding: 30px 20px;
+      color: #666;
+    }
+
+    .user-name-badge {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 15px;
+      justify-content: center;
+    }
+
+    .button-group button {
+      flex: 1;
+      max-width: 200px;
+    }
+
+    @media (max-width: 600px) {
+      .container {
+        padding: 0;
+      }
+
+      .card {
+        border-radius: 10px;
+        padding: 15px;
+      }
+
+      .header h1 {
+        font-size: 24px;
+      }
+
+      .search-form {
+        flex-direction: column;
+      }
+
+      /* Une ligne par resultat : vignette, infos, bouton */
+      .result-item {
+        flex-direction: row;
+        align-items: center;
+        gap: 10px;
+        padding: 10px;
+      }
+
+      .result-item:hover {
+        transform: none;
+      }
+
+      .result-thumbnail,
+      .result-thumbnail.no-art {
+        width: 40px;
+        height: 40px;
+        font-size: 18px;
+      }
+
+      .result-title,
+      .result-meta,
+      .result-source {
+        display: none;
+      }
+
+      .result-compact {
+        display: flex;
+      }
+
+      .result-actions button {
+        padding: 8px 11px;
+        font-size: 11px;
+      }
+
+      .stats {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+
+      .stat-value {
+        font-size: 20px;
+      }
+
+      .stat-label {
+        font-size: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🎵 Ajouter une Chanson</h1>
+      <p>Recherchez et ajoutez vos musiques préférées à la playlist</p>
+    </div>
+
+    <!-- Choix de l'utilisateur -->
+    <div class="card" id="loginCard">
+      <div class="section-title">🔑 Entrez votre code</div>
+
+      <div class="info-box">
+        Entrez le code que l'organisateur vous a donné. Il vous identifie :
+        inutile de saisir votre nom.
+      </div>
+
+      <div class="search-form">
+        <input type="text" id="codeInput" class="code-input" maxlength="40"
+               autocomplete="off" autocapitalize="characters" spellcheck="false"
+               placeholder="Votre code">
+        <button id="joinBtn" onclick="joinByCode()">Entrer</button>
+      </div>
+
+      <div id="loginError" class="info-box error" style="display: none; margin-top: 15px;"></div>
+    </div>
+
+    <!-- Infos utilisateur -->
+    <div class="card" id="userInfoCard" style="display: none;">
+      <div class="user-name-badge" id="userName">-</div>
+
+      <div id="noticeArea"></div>
+
+      <div id="userMessage" class="info-box" style="display: none;"></div>
+
+      <div class="stats">
+        <div class="stat-box">
+          <div class="stat-value" id="userSongCount">0</div>
+          <div class="stat-label">Chansons ajoutées</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="userMaxSongs">3</div>
+          <div class="stat-label" id="userMaxLabel">Maximum</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value ready" id="nextAddValue">—</div>
+          <div class="stat-label" id="nextAddLabel">Prochain ajout</div>
+        </div>
+      </div>
+
+      <button onclick="startOver()" style="width: 100%;">← Se déconnecter</button>
+    </div>
+
+    <!-- Recherche -->
+    <div class="card" id="searchCard" style="display: none;">
+      <div class="section-title">🔍 Rechercher une Chanson</div>
+
+      <div class="search-form">
+        <input type="text" id="searchInput" placeholder="Artiste, chanson, album...">
+        <button id="searchBtn" onclick="searchSongs()">Chercher</button>
+      </div>
+
+      <div class="search-progress" id="searchProgress" style="display: none;">
+        <div class="search-progress-head">
+          <div class="spinner"></div>
+          <span id="searchProgressLabel">Recherche en cours...</span>
+          <span class="search-progress-time" id="searchProgressTime"></span>
+        </div>
+        <div class="search-progress-track">
+          <div class="search-progress-bar" id="searchProgressBar"></div>
+        </div>
+      </div>
+
+      <div id="searchResults"></div>
+    </div>
+
+    <!-- Chansons ajoutées -->
+    <div class="card" id="addedCard" style="display: none;">
+      <div class="section-title">✅ Vos Chansons Ajoutées</div>
+      <div class="added-songs" id="addedSongs"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '/api';
+    let currentUserId = null;
+    let currentUserName = null;
+    let cooldownDeadline = null;   // horodatage local de fin d'attente
+    let cooldownTimer = null;
+    let userMessageTimer = null;   // effacement du bandeau ponctuel
+    let searchResetTimer = null;   // remise a zero de la recherche apres un ajout
+    let searchController = null;   // recherche en cours (annulable)
+    let searchSeq = 0;             // ignore les reponses des recherches abandonnees
+    let searchProgressTimer = null;
+    let searchMaxMs = 20000;       // duree max, remplacee par /api/config
+    let canAddNow = true;          // dernier verdict du serveur sur l'ajout
+    let addLimit = '';             // 'cooldown' ou 'quota' quand l'ajout est bloque
+
+    // Messages du serveur deja lus (ex : telechargement echoue)
+    const dismissedNotices = new Set(
+      JSON.parse(localStorage.getItem('jukeboxDismissedNotices') || '[]')
+    );
+    let lastNotices = [];
+
+    function escapeHtml(str) {
+      return String(str == null ? '' : str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function showLoginError(message) {
+      const el = document.getElementById('loginError');
+      if (!message) {
+        el.style.display = 'none';
+        return;
+      }
+      el.style.display = 'block';
+      el.innerHTML = escapeHtml(message);
+    }
+
+    // ============= CONNEXION PAR CODE =============
+    async function joinByCode() {
+      const input = document.getElementById('codeInput');
+      const btn = document.getElementById('joinBtn');
+      const password = input.value.trim();
+
+      if (!password) {
+        showLoginError('Entrez votre code');
+        return;
+      }
+
+      btn.disabled = true;
+      try {
+        const response = await fetch(`${API_BASE}/guest/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          showLoginError(data.error || 'Code inconnu');
+          return;
+        }
+
+        currentUserId = data.userId;
+        currentUserName = data.name;
+        localStorage.setItem('jukeboxUserId', currentUserId);
+
+        showLoginError('');
+        input.value = '';
+        updateUI();
+        showUserInfo(data);
+        loadAddedSongs();
+      } catch (error) {
+        console.error('Login error:', error);
+        showLoginError('Erreur de connexion au serveur');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // Restaure une session precedemment enregistree dans ce navigateur
+    async function joinSession(userId) {
+      try {
+        const response = await fetch(`${API_BASE}/guest/info/${userId}`);
+        if (!response.ok) {
+          localStorage.removeItem('jukeboxUserId');
+          currentUserId = null;
+          updateUI();
+          return;
+        }
+
+        const data = await response.json();
+        currentUserId = data.userId;
+        currentUserName = data.name;
+        localStorage.setItem('jukeboxUserId', currentUserId);
+
+        showLoginError('');
+        updateUI();
+        showUserInfo(data);
+        loadAddedSongs();
+      } catch (error) {
+        console.error('Error joining session:', error);
+        showLoginError('Erreur de connexion au serveur');
+      }
+    }
+
+    function updateUI() {
+      const logged = !!currentUserId;
+      document.getElementById('loginCard').style.display = logged ? 'none' : 'block';
+      document.getElementById('userInfoCard').style.display = logged ? 'block' : 'none';
+      document.getElementById('searchCard').style.display = logged ? 'block' : 'none';
+      document.getElementById('addedCard').style.display = logged ? 'block' : 'none';
+    }
+
+    // mm:ss pour le chrono, texte long pour les messages
+    function formatClock(totalSeconds) {
+      const s = Math.max(0, Math.ceil(totalSeconds));
+      const m = Math.floor(s / 60);
+      return `${m}:${(s % 60).toString().padStart(2, '0')}`;
+    }
+
+    // Delai entre deux ajouts tel qu'il est reglé en ce moment : l'organisateur
+    // peut le changer en cours de soiree, l'invite doit savoir sur quoi il court.
+    function formatDelay(minutes) {
+      const m = Number(minutes) || 0;
+      if (m <= 0) return 'sans délai';
+      if (m < 1) return `${Math.round(m * 60)} s`;
+      if (Number.isInteger(m)) return `${m} min`;
+      return `${m.toFixed(1).replace('.', ',')} min`;
+    }
+
+    function formatWindow(minutes) {
+      if (minutes % 60 === 0) {
+        const h = minutes / 60;
+        return h === 1 ? 'heure' : `${h} h`;
+      }
+      return `${minutes} min`;
+    }
+
+    // Bandeau d'etat : reserve aux evenements ponctuels (ajout confirme,
+    // doublon, refus). L'attente, le quota et le delai en vigueur se lisent
+    // dans les tuiles : les repeter en haut de la page n'apporte rien.
+    function showUserMessage(html, kind, autoHideMs) {
+      const el = document.getElementById('userMessage');
+      clearTimeout(userMessageTimer);
+      el.className = 'info-box ' + (kind || '');
+      el.innerHTML = html;
+      el.style.display = 'block';
+      if (autoHideMs) userMessageTimer = setTimeout(hideUserMessage, autoHideMs);
+    }
+
+    function hideUserMessage() {
+      clearTimeout(userMessageTimer);
+      const el = document.getElementById('userMessage');
+      el.style.display = 'none';
+      el.innerHTML = '';
+    }
+
+    function stopCooldown() {
+      cooldownDeadline = null;
+      if (cooldownTimer) {
+        clearInterval(cooldownTimer);
+        cooldownTimer = null;
+      }
+    }
+
+    function startCooldown(waitSeconds) {
+      // On calcule une echeance locale : pas de dependance a l'horloge du serveur
+      cooldownDeadline = Date.now() + waitSeconds * 1000;
+      if (!cooldownTimer) {
+        cooldownTimer = setInterval(tickCooldown, 1000);
+      }
+      tickCooldown();
+    }
+
+    function tickCooldown() {
+      if (!cooldownDeadline) return;
+
+      const remaining = (cooldownDeadline - Date.now()) / 1000;
+
+      if (remaining <= 0) {
+        stopCooldown();
+        refreshUserInfo();
+        return;
+      }
+
+      const nextEl = document.getElementById('nextAddValue');
+      nextEl.className = 'stat-value countdown';
+      nextEl.textContent = formatClock(remaining);
+    }
+
+    // Messages laisses par le serveur : chanson retiree, credit rendu...
+    function renderNotices(notices) {
+      // Appels sans notices (retour de recherche) : on garde l'affichage actuel
+      if (Array.isArray(notices)) lastNotices = notices;
+
+      const area = document.getElementById('noticeArea');
+      const visible = lastNotices.filter(n => !dismissedNotices.has(n.id));
+
+      area.innerHTML = visible.map(n => `
+        <div class="info-box error notice">
+          <span>⚠ ${escapeHtml(n.message)}</span>
+          <button class="notice-close" data-notice="${escapeHtml(n.id)}" title="Masquer">✕</button>
+        </div>
+      `).join('');
+    }
+
+    function dismissNotice(id) {
+      dismissedNotices.add(id);
+      localStorage.setItem('jukeboxDismissedNotices',
+        JSON.stringify([...dismissedNotices].slice(-50)));
+      renderNotices();
+    }
+
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.notice-close');
+      if (btn) dismissNotice(btn.dataset.notice);
+    });
+
+    function showUserInfo(data) {
+      renderNotices(data.notices);
+      const nextEl = document.getElementById('nextAddValue');
+
+      document.getElementById('userName').textContent = data.name || '';
+      document.getElementById('userSongCount').textContent = data.addedSongs;
+      document.getElementById('userMaxSongs').textContent = data.maxSongs;
+
+      const maxLabel = document.getElementById('userMaxLabel');
+      maxLabel.textContent = data.quotaWindowMinutes > 0
+        ? `Max / ${formatWindow(data.quotaWindowMinutes)}`
+        : 'Maximum';
+
+      // Le delai peut etre modifie pendant la soiree : on affiche celui du moment
+      const nextLabel = document.getElementById('nextAddLabel');
+      nextLabel.textContent = `Prochain ajout · délai actuel ${formatDelay(data.cooldownMinutes)}`;
+
+      // Les resultats de recherche restent a l'ecran pendant l'attente :
+      // leurs boutons suivent le dernier verdict du serveur.
+      canAddNow = Boolean(data.canAdd.allowed);
+      addLimit = canAddNow ? '' : (data.canAdd.limit || '');
+      syncAddButtons();
+
+      if (data.canAdd.allowed) {
+        stopCooldown();
+        nextEl.className = 'stat-value ready';
+        nextEl.textContent = 'Maintenant';
+        return;
+      }
+
+      const wait = resolveWaitSeconds(data);
+      if (wait > 0) {
+        startCooldown(wait);
+        return;
+      }
+
+      // Quota atteint : pas de decompte possible, seul l'organisateur peut debloquer
+      stopCooldown();
+      nextEl.className = 'stat-value quota-full';
+      nextEl.textContent = 'Quota atteint';
+    }
+
+    // Secondes restantes avant le prochain ajout.
+    // On accepte plusieurs formes de reponse pour ne pas dependre d'une seule
+    // version du serveur : champ dedie, ou delai lu dans le message.
+    function resolveWaitSeconds(data) {
+      const canAdd = data.canAdd || {};
+
+      if (canAdd.waitSeconds > 0) return canAdd.waitSeconds;
+
+      // Quota atteint sans delai annonce : aucune attente ne debloquera la situation
+      if (canAdd.limit === 'quota') return 0;
+      if (data.maxSongs !== undefined && data.addedSongs >= data.maxSongs) return 0;
+
+      // Repli : extraire le delai du texte ("2 min 05 s", "45 s", "245s")
+      const reason = canAdd.reason || '';
+      const withMinutes = reason.match(/(\d+)\s*min(?:\D+(\d+)\s*s)?/i);
+      if (withMinutes) {
+        return parseInt(withMinutes[1], 10) * 60 + (parseInt(withMinutes[2], 10) || 0);
+      }
+      const seconds = reason.match(/(\d+)\s*s\b/i);
+      if (seconds) return parseInt(seconds[1], 10);
+
+      return 0;
+    }
+
+    async function refreshUserInfo() {
+      if (!currentUserId) return null;
+      const response = await fetch(`${API_BASE}/guest/info/${currentUserId}`);
+      if (!response.ok) {
+        startOver();
+        showLoginError("Votre accès a été retiré par l'organisateur");
+        return null;
+      }
+      const data = await response.json();
+      showUserInfo(data);
+      return data;
+    }
+
+    // ============= RECHERCHE =============
+    // Le bouton devient "Annuler" pendant la recherche
+    function setSearchButtonMode(searching) {
+      const btn = document.getElementById('searchBtn');
+      btn.textContent = searching ? 'Annuler' : 'Chercher';
+      btn.classList.toggle('cancel', !!searching);
+    }
+
+    function startSearchProgress() {
+      const box = document.getElementById('searchProgress');
+      const bar = document.getElementById('searchProgressBar');
+      const time = document.getElementById('searchProgressTime');
+      const label = document.getElementById('searchProgressLabel');
+      const startedAt = Date.now();
+
+      clearInterval(searchProgressTimer);
+      box.style.display = 'block';
+      bar.classList.remove('overtime');
+      bar.style.width = '0%';
+
+      const tick = () => {
+        const elapsed = Date.now() - startedAt;
+        const ratio = Math.min(1, elapsed / searchMaxMs);
+        bar.style.width = (ratio * 100).toFixed(1) + '%';
+
+        if (ratio < 1) {
+          label.textContent = 'Recherche en cours…';
+          time.textContent = Math.max(0, Math.ceil((searchMaxMs - elapsed) / 1000)) + ' s';
+        } else {
+          // Au-dela du budget prevu : on garde la barre pleine et animee
+          bar.classList.add('overtime');
+          label.textContent = 'Encore un instant…';
+          time.textContent = '';
+        }
+      };
+
+      tick();
+      searchProgressTimer = setInterval(tick, 100);
+    }
+
+    function stopSearchProgress() {
+      clearInterval(searchProgressTimer);
+      searchProgressTimer = null;
+      document.getElementById('searchProgress').style.display = 'none';
+    }
+
+    // Interrompt la requete en cours (le compteur searchSeq neutralise sa reponse)
+    function cancelSearch(message) {
+      if (searchController) {
+        searchSeq++;
+        searchController.abort();
+        searchController = null;
+      }
+      stopSearchProgress();
+      setSearchButtonMode(false);
+      if (message) {
+        document.getElementById('searchResults').innerHTML =
+          `<div class="no-results">${message}</div>`;
+      }
+    }
+
+    // Apres un ajout, la recherche precedente n'a plus lieu d'etre a l'ecran :
+    // on laisse la confirmation quelques secondes, puis la page redevient
+    // nette pour la chanson suivante.
+    function clearSearch() {
+      clearTimeout(searchResetTimer);
+      searchResetTimer = null;
+      window.searchResults = null;
+      document.getElementById('searchResults').innerHTML = '';
+      document.getElementById('searchInput').value = '';
+    }
+
+    function scheduleSearchReset(delayMs) {
+      clearTimeout(searchResetTimer);
+      const seq = searchSeq;
+      searchResetTimer = setTimeout(() => {
+        // Une nouvelle recherche a ete lancee entre-temps : on n'y touche pas
+        if (seq !== searchSeq || searchController) return;
+        clearSearch();
+      }, delayMs || 5000);
+    }
+
+    async function searchSongs(relaunch) {
+      if (!currentUserId) return;
+
+      // Une nouvelle recherche annule la remise a zero programmee
+      clearTimeout(searchResetTimer);
+      searchResetTimer = null;
+
+      // Un nouveau clic sur le bouton pendant une recherche l'annule
+      if (searchController) {
+        cancelSearch(relaunch ? null : 'Recherche annulée');
+        if (!relaunch) return;
+      }
+
+      const query = document.getElementById('searchInput').value.trim();
+      if (!query || query.length < 2) {
+        alert('Entrez au moins 2 caractères');
+        return;
+      }
+
+      const resultsEl = document.getElementById('searchResults');
+      resultsEl.innerHTML = '';
+
+      const mySeq = ++searchSeq;
+      const controller = new AbortController();
+      searchController = controller;
+      setSearchButtonMode(true);
+      startSearchProgress();
+
+      try {
+        const response = await fetch(
+          `${API_BASE}/search?q=${encodeURIComponent(query)}&userId=${encodeURIComponent(currentUserId)}`,
+          { signal: controller.signal }
+        );
+
+        // Une recherche plus recente (ou une annulation) a pris le relais
+        if (mySeq !== searchSeq) return;
+
+        if (response.status === 403) {
+          startOver();
+          showLoginError("Votre accès a été retiré par l'organisateur");
+          return;
+        }
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          resultsEl.innerHTML = `<div class="info-box error">${escapeHtml(data.error || 'Erreur')}</div>`;
+          return;
+        }
+
+        // Attente en cours : on garde le verdict du serveur mais on affiche
+        // quand meme les resultats. L'invite cherche pendant son delai, il
+        // ajoute des qu'il est echu.
+        canAddNow = Boolean(data.canAdd.allowed);
+        addLimit = canAddNow ? '' : (data.canAdd.limit || '');
+        if (!canAddNow) refreshUserInfo();
+
+        if (data.results.length === 0) {
+          resultsEl.innerHTML =
+            '<div class="no-results">Désolé, aucun résultat de recherche</div>';
+          return;
+        }
+
+        window.searchResults = data.results;
+
+        resultsEl.innerHTML = `<div class="results">${
+          data.results.map((song, idx) => {
+            const meta = escapeHtml(song.artist)
+              + (song.duration ? ' • ' + formatClock(song.duration) : '');
+
+            const source = song.source === 'soulseek'
+              ? '🎧 Soulseek'
+                + (song.format ? ' • ' + escapeHtml(song.format.toUpperCase()) : '')
+                + (song.bitrate ? ' • ' + song.bitrate + ' kbps' : '')
+                + (song.freeSlot === false ? ' • ⏳ file d\'attente' : '')
+              : '🎵 Navidrome';
+
+            return `
+            <div class="result-item">
+              <div class="result-thumbnail${song.coverArt ? '' : ' no-art'}">
+                ${song.coverArt ? `<img src="${escapeHtml(song.coverArt)}" alt="">` : '🎵'}
+              </div>
+              <div class="result-info">
+                <div class="result-title">${escapeHtml(song.title)}</div>
+                <div class="result-meta">${meta}</div>
+                <div class="result-source">${source}</div>
+
+                <!-- Mobile : titre, artiste, durée et source sur une seule ligne -->
+                <div class="result-compact">
+                  <span class="result-compact-title">${escapeHtml(song.title)}</span>
+                  <span class="result-compact-meta">• ${meta} • ${source}</span>
+                </div>
+              </div>
+              <div class="result-actions">
+                ${song.inPlaylist
+                  ? `<button class="duplicate" disabled title="Déjà dans la playlist">${
+                      song.alreadyPlayed ? '✓ Déjà passée' : '✓ Déjà dans la liste'}</button>`
+                  : `<button class="add-btn${canAddNow ? '' : ' waiting'}"
+                       onclick="addSong(${idx}, this)" ${canAddNow ? '' : 'disabled'}>${
+                       canAddNow ? '+ Ajouter' : '⏳ En attente'}</button>`}
+              </div>
+            </div>`;
+          }).join('')
+        }</div>`;
+
+        // Les boutons viennent d'etre recrees : on leur applique l'etat courant
+        syncAddButtons();
+      } catch (error) {
+        if (error.name === 'AbortError' || mySeq !== searchSeq) return;
+        console.error('Search error:', error);
+        resultsEl.innerHTML = '<div class="info-box error">Erreur lors de la recherche</div>';
+      } finally {
+        if (mySeq === searchSeq) {
+          searchController = null;
+          setSearchButtonMode(false);
+          stopSearchProgress();
+        }
+      }
+    }
+
+    // Delai en cours : on ne cache pas les resultats, on neutralise seulement
+    // les boutons. Des que le decompte tombe a zero, showUserInfo repasse par
+    // ici et l'invite ajoute la chanson qu'il avait deja trouvee.
+    function syncAddButtons() {
+      const attente = addLimit === 'quota'
+        ? "Quota atteint — le bouton se rallume dès qu'une place se libère"
+        : 'Le bouton se rallume tout seul à la fin du décompte';
+
+      document.querySelectorAll('#searchResults button.add-btn').forEach(btn => {
+        // Ajout deja fait, doublon ou envoi en cours : on n'y touche pas
+        if (btn.classList.contains('added')
+            || btn.classList.contains('duplicate')
+            || btn.classList.contains('busy')) return;
+
+        btn.disabled = !canAddNow;
+        btn.classList.toggle('waiting', !canAddNow);
+        btn.textContent = canAddNow ? '+ Ajouter' : '⏳ En attente';
+        btn.title = canAddNow ? '' : attente;
+      });
+    }
+
+    // Etat du bouton d'un resultat : en cours, ajoute (vert), ou de nouveau libre
+    function setAddButtonState(btn, state) {
+      if (!btn) return;
+
+      if (state === 'pending') {
+        btn.disabled = true;
+        btn.classList.add('busy');
+        btn.classList.remove('added', 'duplicate', 'waiting');
+        btn.textContent = 'Ajout…';
+      } else if (state === 'added') {
+        btn.disabled = true;
+        btn.classList.remove('duplicate', 'busy', 'waiting');
+        btn.classList.add('added');
+        btn.textContent = '✓ Ajouté';
+      } else if (state === 'duplicate') {
+        btn.disabled = true;
+        btn.classList.remove('added', 'busy', 'waiting');
+        btn.classList.add('duplicate');
+        btn.textContent = '✓ Déjà dans la liste';
+      } else {
+        btn.classList.remove('added', 'duplicate', 'busy');
+        // Retour a l'etat libre : c'est le delai qui decide s'il est cliquable
+        btn.disabled = !canAddNow;
+        btn.classList.toggle('waiting', !canAddNow);
+        btn.textContent = canAddNow ? '+ Ajouter' : '⏳ En attente';
+      }
+    }
+
+    async function addSong(index, btn) {
+      const song = window.searchResults ? window.searchResults[index] : null;
+      if (!song || !currentUserId) return;
+      if (btn && btn.disabled) return;   // deja ajoute ou envoi en cours
+
+      setAddButtonState(btn, 'pending');
+
+      try {
+        const response = await fetch(`${API_BASE}/playlist/add`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ song, userId: currentUserId })
+        });
+
+        if (response.status === 403) {
+          startOver();
+          showLoginError("Votre accès a été retiré par l'organisateur");
+          return;
+        }
+
+        if (response.ok) {
+          setAddButtonState(btn, 'added');
+          refreshUserInfo();
+          loadAddedSongs();
+
+          showUserMessage(
+            `✓ « ${escapeHtml(song.title)} » a été ajoutée à la playlist`,
+            'success', 4000);
+
+          // Page nette au bout de 5 s : champ de recherche vide, resultats effaces
+          scheduleSearchReset(5000);
+        } else if (response.status === 409) {
+          // Doublon : le quota n'a pas bougé, on l'indique sans alerte
+          const error = await response.json().catch(() => ({}));
+          setAddButtonState(btn, 'duplicate');
+          showUserMessage(
+            '⚠ ' + escapeHtml(error.error || 'Chanson déjà dans la playlist'),
+            'error', 5000);
+        } else if (response.status === 429) {
+          // Delai pas tout a fait echu (horloges legerement decalees) :
+          // on remet le bouton en attente, il se rallumera tout seul.
+          await response.json().catch(() => ({}));
+          canAddNow = false;
+          addLimit = 'cooldown';
+          setAddButtonState(btn, 'idle');
+          showUserMessage('⏳ Pas encore — réessayez dans un instant', 'error', 4000);
+          refreshUserInfo();
+        } else {
+          setAddButtonState(btn, 'idle');
+          const error = await response.json().catch(() => ({}));
+          alert('Erreur: ' + (error.error || 'ajout impossible'));
+          refreshUserInfo();
+        }
+      } catch (error) {
+        setAddButtonState(btn, 'idle');
+        console.error('Add song error:', error);
+        alert("Erreur lors de l'ajout de la chanson");
+      }
+    }
+
+    // ============= MES CHANSONS =============
+    async function loadAddedSongs() {
+      if (!currentUserId) return;
+      try {
+        const response = await fetch(`${API_BASE}/playlist`);
+        const data = await response.json();
+        const playlist = data.playlist || [];
+        const mine = playlist
+          .map((track, index) => ({ track, index }))
+          .filter(entry => entry.track.addedById === currentUserId);
+
+        const el = document.getElementById('addedSongs');
+        if (mine.length === 0) {
+          el.innerHTML = '<div class="no-results">Vous n\'avez pas encore ajouté de chanson</div>';
+          return;
+        }
+
+        // Une chanson deja passee ou en cours de lecture ne se retire plus :
+        // elle a eu son tour, elle reste comptee dans le quota.
+        el.innerHTML = mine.map(({ track, index }) => {
+          const enLecture = index === data.currentIndex;
+          const retirable = !track.played && !enLecture;
+          const action = retirable
+            ? `<button class="song-remove" data-song="${escapeHtml(String(track.id))}"
+                 title="Retirer cette chanson et récupérer votre crédit">Retirer</button>`
+            : `<span class="added-song-state">${enLecture ? 'en cours' : 'déjà jouée'}</span>`;
+
+          return `
+          <div class="added-song">
+            <div>
+              <div class="added-song-title">${escapeHtml(track.title)}</div>
+              <div class="added-song-artist">${escapeHtml(track.artist)}</div>
+            </div>
+            ${action}
+          </div>`;
+        }).join('');
+      } catch (error) {
+        console.error('Error loading added songs:', error);
+      }
+    }
+
+    // Retirer une de ses chansons : le serveur rend le quota et remet le
+    // delai d'ajout a zero, on rafraichit donc les deux affichages.
+    async function removeMySong(songId, button) {
+      if (!currentUserId || !songId) return;
+
+      button.disabled = true;
+      button.textContent = '…';
+
+      try {
+        const response = await fetch(`${API_BASE}/playlist/remove`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ songId, userId: currentUserId })
+        });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          showUserMessage('⚠ ' + escapeHtml(error.error || 'Retrait impossible'),
+            'error', 5000);
+        }
+
+        await refreshUserInfo();
+        await loadAddedSongs();
+      } catch (error) {
+        console.error('Error removing song:', error);
+        button.disabled = false;
+        button.textContent = 'Retirer';
+      }
+    }
+
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.song-remove');
+      if (btn) removeMySong(btn.dataset.song, btn);
+    });
+
+    function startOver() {
+      stopCooldown();
+      hideUserMessage();
+      cancelSearch();
+      clearSearch();
+      lastNotices = [];
+      document.getElementById('noticeArea').innerHTML = '';
+      currentUserId = null;
+      currentUserName = null;
+      localStorage.removeItem('jukeboxUserId');
+      updateUI();
+      document.getElementById('codeInput').focus();
+    }
+
+    document.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && e.target.id === 'searchInput') {
+        // Entree pendant une recherche : on l'annule et on relance la nouvelle
+        searchSongs(true);
+      }
+      if (e.key === 'Enter' && e.target.id === 'codeInput') {
+        joinByCode();
+      }
+    });
+
+    // ============= INIT =============
+    (async function init() {
+      updateUI();
+
+      // Duree max d'une recherche cote serveur -> echelle de la barre
+      try {
+        const config = await (await fetch(`${API_BASE}/config`)).json();
+        if (config && config.searchMaxMs > 0) searchMaxMs = config.searchMaxMs;
+      } catch (error) {
+        console.warn('Config indisponible, duree de recherche par defaut');
+      }
+
+      const saved = localStorage.getItem('jukeboxUserId');
+      if (saved) {
+        await joinSession(saved);
+      }
+
+      // Resynchronisation reguliere (le decompte, lui, tourne chaque seconde en local)
+      setInterval(() => {
+        if (currentUserId) {
+          refreshUserInfo();
+          loadAddedSongs();
+        }
+      }, 15000);
+    })();
+  </script>
+</body>
+</html>

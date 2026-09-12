@@ -1,0 +1,1753 @@
+<!DOCTYPE html>
+<!-- Jukebox — ecran de lecture — Version 1.1.2 (2026-09-09)
+     1.1.2 — Visualiseur : la resolution interne du canvas suit desormais sa
+             largeur reelle (ResizeObserver) et la densite d'ecran, et les
+             barres sont calees sur la grille de pixels — fini l'onde floue.
+     1.1.1 — Correction : la classe posee sur <body> s'appelait "no-lyrics",
+             comme le style du message des paroles absentes (display:flex,
+             height:100%) — le <body> devenait un conteneur flex et toute la
+             page se tassait au centre. Elle s'appelle desormais
+             "sans-paroles". Hauteur de la pochette calculee pour tenir dans
+             la fenetre ; invitation QR en ligne sur les ecrans larges.
+     1.1.0 — Seules les paroles synchronisees sont affichees ; sinon le
+             panneau disparait et la colonne pochette / waveform /
+             progression prend la place liberee.
+     1.0.0 — Version initiale -->
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🎵 Jukebox - Player</title>
+  <style>
+    /* ═══════════════════════════════════════════════════════
+       Thème « Cortex » — aligné sur index.html
+       Fond radial sombre, verre dépoli, accent néon cyan.
+       ═══════════════════════════════════════════════════════ */
+    :root {
+      --neon: #00e5ff;
+      /* Largeur commune à la pochette, à la waveform et à la barre de
+         progression : le bloc central reste une colonne bien alignée. */
+      --stack-w: min(100%, 38vh, 380px);
+      --neon-soft: rgba(0, 229, 255, 0.35);
+      --bg1: #0b0b15;
+      --bg2: #141428;
+      --card: rgba(255, 255, 255, 0.06);
+      --border: rgba(255, 255, 255, 0.08);
+      --muted: rgba(255, 255, 255, 0.55);
+      --muted-dim: rgba(255, 255, 255, 0.38);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      background: radial-gradient(circle at top, var(--bg2), var(--bg1));
+      background-attachment: fixed;
+      color: #fff;
+      overflow: hidden;
+      height: 100vh;
+    }
+
+    .container {
+      display: grid;
+      grid-template-columns: 1fr 1.6fr 1fr;
+      height: 100vh;
+      gap: 14px;
+      padding: 14px;
+    }
+
+    .section {
+      background: var(--card);
+      border-radius: 22px;
+      padding: 20px;
+      backdrop-filter: blur(18px);
+      border: 1px solid var(--border);
+      box-shadow: 0 0 40px rgba(0, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: fadeIn .6s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(15px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    h2 {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: .3px;
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* Ordre visuel : playlist a gauche, lecteur au centre, paroles a droite */
+    .playlist-section { order: 1; }
+    .player-section   { order: 2; }
+    .lyrics-section   { order: 3; }
+
+    .player-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 22px;
+      overflow-y: auto;
+    }
+
+    .album-art {
+      width: var(--stack-w);
+      aspect-ratio: 1 / 1;
+      height: auto;
+      border-radius: 20px;
+      background: linear-gradient(135deg, rgba(0, 229, 255, 0.22) 0%, rgba(10, 20, 60, 0.9) 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 80px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 30px rgba(0, 229, 255, 0.12);
+      overflow: hidden;
+      position: relative;
+      transition: width 0.35s ease, box-shadow .25s;
+    }
+
+    .album-art:hover {
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 34px rgba(0, 229, 255, 0.4);
+    }
+
+    /* Le span intermediaire doit remplir la pochette, sinon l'image
+       flotte au milieu et le degrade de fond deborde sur les cotes. */
+    .album-art > span {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+    }
+
+    .album-art img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .album-art.no-cover {
+      background: linear-gradient(135deg, rgba(0, 229, 255, 0.22) 0%, rgba(10, 20, 60, 0.9) 100%);
+    }
+
+    .source-badge {
+      display: none;
+      margin-top: -10px;
+      font-size: 11px;
+      color: var(--muted-dim);
+      letter-spacing: 0.3px;
+    }
+
+    .source-badge.visible {
+      display: block;
+    }
+
+    .track-info {
+      text-align: center;
+      width: 100%;
+    }
+
+    .track-title {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      line-height: 1.3;
+    }
+
+    .track-artist {
+      font-size: 14px;
+      color: var(--neon);
+      opacity: .9;
+      margin-bottom: 4px;
+    }
+
+    /* ── Waveform (visualiseur audio) ─────────────────────────
+       Onde miroir, sans cadre : elle flotte sous la pochette et
+       fait exactement la même largeur qu'elle. */
+    #visualizer {
+      width: var(--stack-w);
+      height: 62px;
+      display: block;
+      background: transparent;
+      flex-shrink: 0;
+      margin: -6px 0;
+    }
+
+    .progress-container {
+      width: var(--stack-w);
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 3px;
+      cursor: pointer;
+      margin-bottom: 10px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      width: 0;
+      height: 100%;
+      background: linear-gradient(90deg, rgba(0, 229, 255, .55), var(--neon));
+      box-shadow: 0 0 12px rgba(0, 229, 255, .55);
+      border-radius: 3px;
+      transition: width 0.1s linear;
+    }
+
+    .time-display {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    audio {
+      width: 100%;
+      margin-top: 20px;
+    }
+
+    .lyrics-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .lyrics-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      font-size: 14px;
+      line-height: 1.8;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    .lyric-line {
+      padding: 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .lyric-line:hover {
+      background: rgba(0, 229, 255, 0.08);
+    }
+
+    .lyric-line.active {
+      background: rgba(0, 229, 255, 0.12);
+      color: var(--neon);
+      font-weight: 700;
+      text-shadow: 0 0 10px rgba(0, 229, 255, 0.4);
+      transform: translateX(10px);
+    }
+
+    .playlist-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .playlist-header {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: .3px;
+      margin-bottom: 4px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .playlist-count {
+      background: rgba(0, 229, 255, 0.12);
+      border: 1px solid rgba(0, 229, 255, 0.3);
+      color: var(--neon);
+      padding: 4px 12px;
+      border-radius: 50px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .playlist {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .playlist-item {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      padding: 12px 16px;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.2s, box-shadow 0.2s, transform 0.2s, border-color .2s;
+      border-left: 3px solid transparent;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .playlist-item:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(0, 229, 255, 0.25);
+    }
+
+    /* Piste en cours : bien detachee du reste de la liste */
+    .playlist-item.current {
+      background: linear-gradient(90deg,
+        rgba(0, 229, 255, 0.22) 0%,
+        rgba(0, 229, 255, 0.04) 100%);
+      border-left: 5px solid var(--neon);
+      border-color: rgba(0, 229, 255, 0.35);
+      box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.25),
+                  0 10px 28px rgba(0, 229, 255, 0.18);
+      padding: 15px 16px;
+      transform: none;
+    }
+
+    .item-title > span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .playlist-item.current .item-title {
+      font-size: 19px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .playlist-item.current .item-title > span {
+      white-space: normal;
+      overflow: visible;
+    }
+
+    .playlist-item.current .item-meta,
+    .playlist-item.current .item-added {
+      color: rgba(180, 245, 255, 0.85);
+    }
+
+    .playlist-item.played {
+      opacity: 0.5;
+    }
+
+    .playlist-item.current,
+    .playlist-item.current.played {
+      opacity: 1;
+      color: #fff;
+    }
+
+    .item-title {
+      font-size: 16px;
+      font-weight: 500;
+      line-height: 1.35;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Ligne d'infos etalee sur toute la largeur de la colonne */
+    .item-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .item-meta {
+      font-size: 13px;
+      color: var(--muted);
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .item-added {
+      font-size: 13px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+
+    /* Petit egaliseur anime devant la piste en cours */
+    .eq {
+      display: inline-flex;
+      align-items: flex-end;
+      gap: 2px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+
+    .eq i {
+      width: 3px;
+      background: var(--neon);
+      box-shadow: 0 0 8px rgba(0, 229, 255, .7);
+      border-radius: 2px;
+      animation: eqbar 1s ease-in-out infinite;
+    }
+
+    .eq i:nth-child(1) { height: 60%; animation-delay: -0.2s; }
+    .eq i:nth-child(2) { height: 100%; animation-delay: -0.5s; }
+    .eq i:nth-child(3) { height: 45%; animation-delay: -0.8s; }
+
+    @keyframes eqbar {
+      0%, 100% { transform: scaleY(0.35); }
+      50%      { transform: scaleY(1); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .eq i { animation: none; }
+    }
+
+    .lyric-line.static {
+      cursor: default;
+      opacity: 0.85;
+    }
+
+    .lyric-line.static:hover {
+      background: transparent;
+    }
+
+    .no-lyrics {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--muted-dim);
+      text-align: center;
+      font-size: 14px;
+    }
+
+    .links {
+      display: flex;
+      gap: 10px;
+      margin-top: 6px;
+      justify-content: center;
+    }
+
+    .links a {
+      color: var(--neon);
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 8px 18px;
+      border: 1px solid rgba(0, 229, 255, 0.4);
+      border-radius: 50px;
+      transition: all 0.2s;
+    }
+
+    .links a:hover {
+      background: var(--neon);
+      color: #000;
+      box-shadow: 0 0 22px rgba(0, 229, 255, .5);
+    }
+
+    /* Sans paroles à afficher, le panneau central n'a rien à dire :
+       on le retire et la pochette prend la place. */
+    body.sans-paroles .container {
+      /* Deux colonnes : la playlist garde de quoi respirer, le lecteur
+         recupere toute la place des paroles. */
+      grid-template-columns: minmax(240px, 1fr) 2.4fr;
+    }
+
+    body.sans-paroles .lyrics-section {
+      display: none;
+    }
+
+    /* Carrée quoi qu'il arrive : bornée à la fois par la hauteur
+       disponible et par la largeur de la colonne. */
+    body.sans-paroles {
+      /* Le reste de la colonne (onde, textes, progression, QR, liens) occupe
+         une hauteur fixe : on la retranche pour que rien ne deborde. */
+      --stack-w: clamp(200px, min(100%, calc(100vh - 655px)), 700px);
+    }
+
+    body.sans-paroles .player-section {
+      gap: 16px;
+    }
+
+    body.sans-paroles .album-art {
+      flex-shrink: 0;
+      font-size: 180px;
+    }
+
+    /* La place gagnee profite aussi a l'onde et aux textes : de loin,
+       tout doit rester lisible. */
+    body.sans-paroles #visualizer {
+      height: 84px;
+    }
+
+    body.sans-paroles .track-title {
+      font-size: 36px;
+      line-height: 1.2;
+    }
+
+    body.sans-paroles .track-artist {
+      font-size: 19px;
+    }
+
+    body.sans-paroles .source-badge {
+      font-size: 13px;
+    }
+
+    body.sans-paroles .progress-bar {
+      height: 8px;
+    }
+
+    body.sans-paroles .time-display {
+      font-size: 15px;
+    }
+
+    /* Colonne large : l'invitation passe en ligne (QR a gauche, texte a
+       droite). Elle rend ainsi une centaine de pixels a la pochette. */
+    @media (min-width: 1201px) {
+      body.sans-paroles .join {
+        flex-direction: row;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: center;
+        text-align: left;
+        gap: 18px;
+      }
+
+      body.sans-paroles .join-url {
+        flex-basis: 100%;
+        text-align: center;
+      }
+    }
+
+    /* Ecran large mais peu haut (1366x768, videoprojecteur) : le QR code et
+       les textes se resserrent pour laisser de quoi voir la pochette. */
+    @media (min-width: 1201px) and (max-height: 850px) {
+      body.sans-paroles .join-qr {
+        width: 110px;
+        height: 110px;
+      }
+
+      body.sans-paroles .join {
+        padding: 12px 14px;
+      }
+
+      body.sans-paroles .track-title {
+        font-size: 26px;
+      }
+
+      body.sans-paroles .track-artist {
+        font-size: 16px;
+      }
+
+      body.sans-paroles #visualizer {
+        height: 58px;
+      }
+    }
+
+    /* Une seule colonne : la page défile, les paroles cèdent la place */
+    @media (max-width: 1200px) {
+      body {
+        overflow: auto;
+        height: auto;
+        min-height: 100vh;
+      }
+
+      .container {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: 100vh;
+      }
+
+      /* Empile: lecteur d'abord, playlist ensuite */
+      .player-section   { order: 1; }
+      .playlist-section { order: 2; }
+
+      .section {
+        overflow: visible;
+      }
+
+      :root,
+      body.sans-paroles {
+        --stack-w: min(72vw, 320px);
+      }
+
+      .album-art {
+        font-size: 60px;
+      }
+
+      body.sans-paroles .container {
+        grid-template-columns: 1fr;
+      }
+
+      body.sans-paroles .album-art {
+        font-size: 90px;
+      }
+
+      body.sans-paroles #visualizer {
+        height: 62px;
+      }
+
+      body.sans-paroles .track-title {
+        font-size: 26px;
+      }
+
+      body.sans-paroles .track-artist {
+        font-size: 16px;
+      }
+
+      .lyrics-section {
+        display: none;
+      }
+
+      .playlist {
+        max-height: 55vh;
+      }
+    }
+
+    /* Téléphone : tout en pleine largeur, textes et pochette resserrés */
+    @media (max-width: 700px) {
+      body {
+        padding: 0;
+      }
+
+      .container {
+        padding: 12px;
+        gap: 12px;
+      }
+
+      .section {
+        padding: 16px;
+        border-radius: 18px;
+      }
+
+      :root,
+      body.sans-paroles {
+        --stack-w: min(74vw, 260px);
+      }
+
+      .album-art,
+      body.sans-paroles .album-art {
+        font-size: 70px;
+      }
+
+      .track-title,
+      body.sans-paroles .track-title {
+        font-size: 20px;
+      }
+
+      body.sans-paroles .track-artist {
+        font-size: 14px;
+      }
+
+      #visualizer,
+      body.sans-paroles #visualizer {
+        height: 50px;
+      }
+
+      .join {
+        width: 100%;
+      }
+
+      .join-qr {
+        width: 130px;
+        height: 130px;
+      }
+
+      .playlist {
+        max-height: 45vh;
+      }
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(0, 229, 255, 0.35);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 229, 255, 0.7);
+    }
+
+    /* Le navigateur refuse de demarrer le son sans un geste : un clic,
+       une seule fois, et l'ecran redevient un simple afficheur. */
+    .sound-unlock {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 5, 12, 0.92);
+      backdrop-filter: blur(6px);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      text-align: center;
+    }
+
+    .sound-unlock.active {
+      display: flex;
+    }
+
+    .sound-unlock-box {
+      background: var(--card);
+      backdrop-filter: blur(18px);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 40px 50px;
+      max-width: 460px;
+      box-shadow: 0 0 40px rgba(0, 255, 255, 0.12);
+      animation: fadeIn .5s ease;
+    }
+
+    .sound-unlock-icon {
+      font-size: 54px;
+      margin-bottom: 15px;
+      filter: drop-shadow(0 0 18px rgba(0, 229, 255, .6));
+    }
+
+    .sound-unlock-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: var(--neon);
+    }
+
+    .sound-unlock-text {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .status {
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 4px;
+      min-height: 18px;
+    }
+
+    /* Invitation a rejoindre : QR code + adresse en clair */
+    .join {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      margin-top: 6px;
+      padding: 18px 20px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      text-align: center;
+      max-width: 100%;
+    }
+
+    .join-qr {
+      width: 150px;
+      height: 150px;
+      border-radius: 10px;
+      background: #fff;
+      padding: 6px;
+      flex: none;
+      display: block;
+      box-shadow: 0 0 22px rgba(0, 229, 255, 0.18);
+    }
+
+    .join-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .join-hint {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+      margin-top: 4px;
+    }
+
+    .join-url {
+      display: inline-block;
+      font-size: 13px;
+      color: var(--neon);
+      font-weight: 600;
+      word-break: break-all;
+      line-height: 1.4;
+      text-decoration: none;
+      padding: 4px 8px;
+      border-radius: 6px;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    a.join-url:hover {
+      background: rgba(0, 229, 255, 0.18);
+      color: #fff;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <!-- Cet ecran ne pilote rien : il affiche et il joue. Lecture, pause et
+       changement de piste se commandent depuis /admin. -->
+  <div class="sound-unlock" id="soundUnlock">
+    <div class="sound-unlock-box">
+      <div class="sound-unlock-icon">🔊</div>
+      <div class="sound-unlock-title">Cliquez pour activer le son</div>
+      <div class="sound-unlock-text">
+        Le navigateur bloque le démarrage automatique du son. Un clic suffit,
+        une seule fois. La lecture se pilote ensuite depuis la page admin.
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    <!-- Centre: Lecteur -->
+    <div class="section player-section">
+      <div class="album-art no-cover" id="albumArt">
+        <span id="albumArtContent">🎵</span>
+      </div>
+
+      <div class="source-badge" id="sourceBadge"></div>
+      
+      <div class="track-info">
+        <div class="track-title" id="trackTitle">Sélectionnez une chanson</div>
+        <div class="track-artist" id="trackArtist">Playlist vide</div>
+      </div>
+
+      <canvas id="visualizer"></canvas>
+
+      <div class="progress-container">
+        <div class="progress-bar" id="progressBar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="time-display">
+          <span id="currentTime">0:00</span>
+          <span id="duration">0:00</span>
+        </div>
+      </div>
+
+      <audio id="audioPlayer"></audio>
+
+      <div class="status">
+        <small id="status">Attente...</small>
+      </div>
+
+      <div class="join">
+        <img class="join-qr" id="joinQr" src="/api/qr" alt="QR code vers la page d'ajout de musique">
+        <div>
+          <div class="join-title">📱 Ajoutez vos musiques</div>
+          <div class="join-hint">Scannez ce code avec votre téléphone</div>
+        </div>
+        <a class="join-url" id="joinUrl" target="_blank" rel="noopener">&nbsp;</a>
+      </div>
+
+      <div class="links">
+        <a href="/admin">🔑 Admin</a>
+      </div>
+    </div>
+
+    <!-- Droite: Paroles -->
+    <div class="section lyrics-section">
+      <h2>
+        Paroles
+        <span id="lyricsBadge" style="font-size: 11px; font-weight: normal; color: rgba(255,255,255,0.45);"></span>
+      </h2>
+      <div class="lyrics-container" id="lyricsContainer">
+        <div class="no-lyrics">Les paroles apparaîtront ici</div>
+      </div>
+    </div>
+
+    <!-- Gauche: Playlist -->
+    <div class="section playlist-section">
+      <div class="playlist-header">
+        Playlist
+        <span class="playlist-count" id="playlistCount">0</span>
+      </div>
+      <div class="playlist" id="playlist"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '/api';
+    let currentTrack = null;
+
+    // ---- Lecture : un seul élément <audio>, alimenté par /api/stream ----
+    // Une seule sortie audio : Navidrome et Soulseek servent tous deux
+    // un fichier via /api/stream/:source/:id
+    let awaitingDownload = false;    // piste Soulseek pas encore téléchargée
+
+    // ---- Fondu entre les chansons ----
+    // Durée décidée par le serveur (FADE_SECONDS, modifiable depuis /admin) :
+    // le morceau sortant descend sur cette durée, le suivant remonte sur la
+    // même. 0 = enchaînement sec.
+    let fadeSeconds = 0;
+    let fadeIn = null;           // { debut, duree } quand un fondu d'entrée court
+    let fadeOutDemande = false;  // la piste suivante n'est demandée qu'une fois
+    let playbackState = {};
+
+    const els = {
+      audio: document.getElementById('audioPlayer'),
+      albumArtContent: document.getElementById('albumArtContent'),
+      sourceBadge: document.getElementById('sourceBadge'),
+      albumArt: document.getElementById('albumArt'),
+      trackTitle: document.getElementById('trackTitle'),
+      trackArtist: document.getElementById('trackArtist'),
+      soundUnlock: document.getElementById('soundUnlock'),
+      progressBar: document.getElementById('progressBar'),
+      progressFill: document.getElementById('progressFill'),
+      currentTime: document.getElementById('currentTime'),
+      duration: document.getElementById('duration'),
+      lyricsContainer: document.getElementById('lyricsContainer'),
+      lyricsBadge: document.getElementById('lyricsBadge'),
+      playlist: document.getElementById('playlist'),
+      playlistCount: document.getElementById('playlistCount'),
+      status: document.getElementById('status')
+    };
+
+    function formatTime(seconds) {
+      if (!seconds || isNaN(seconds)) return '0:00';
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60);
+      return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    // ============= PLAYLIST : RENDU ET DEFILEMENT =============
+    // La playlist est rechargee toutes les 2 s : on ne reconstruit le HTML que
+    // si quelque chose a change, sinon le defilement sauterait sans arret.
+    let playlistSignature = '';
+    let lastCurrentIndex = -1;
+    let lastManualScrollAt = 0;
+    let playlistPositioned = false;      // premier centrage effectue ?
+    const AUTOSCROLL_PAUSE_MS = 10000;   // apres un defilement manuel
+
+    function renderPlaylist(data) {
+      const signature = JSON.stringify([
+        data.currentIndex,
+        data.playlist.map(t => [t.source, t.id, t.title, t.artist, t.duration, t.played, t.addedBy])
+      ]);
+
+      if (signature !== playlistSignature) {
+        playlistSignature = signature;
+        const keepScroll = els.playlist.scrollTop;
+
+        els.playlist.innerHTML = data.playlist.map((track, idx) => `
+          <div class="playlist-item ${idx === data.currentIndex ? 'current' : ''} ${track.played ? 'played' : ''}"
+               title="${track.title} - ${track.artist}">
+            <div class="item-title">${idx === data.currentIndex ? '<span class="eq"><i></i><i></i><i></i></span>' : ''}<span>${track.title}</span></div>
+            <div class="item-row">
+              <span class="item-meta">${track.artist} • ${formatTime(track.duration)}</span>
+              <span class="item-added">Ajouté par: ${track.addedBy || 'Admin'}</span>
+            </div>
+          </div>
+        `).join('');
+
+        els.playlist.scrollTop = keepScroll;   // le re-rendu ne doit pas tout remonter
+      }
+
+      // Changement de piste : on recentre meme si quelqu'un vient de faire defiler
+      const trackChanged = data.currentIndex !== lastCurrentIndex;
+      lastCurrentIndex = data.currentIndex;
+      scrollPlaylistToCurrent(trackChanged);
+
+      // La mise en page se stabilise juste apres (polices, pochette) : on
+      // repasse une fois pour un centrage exact. Sans effet si c'est deja bon.
+      requestAnimationFrame(() => scrollPlaylistToCurrent(trackChanged));
+    }
+
+    function scrollPlaylistToCurrent(force) {
+      const box = els.playlist;
+      const item = box.querySelector('.playlist-item.current');
+      if (!item) return;
+
+      // Quelqu'un consulte la liste : on le laisse tranquille un moment
+      if (!force && Date.now() - lastManualScrollAt < AUTOSCROLL_PAUSE_MS) return;
+
+      const boxRect = box.getBoundingClientRect();
+      const itemRect = item.getBoundingClientRect();
+      const delta = (itemRect.top - boxRect.top) - (box.clientHeight - itemRect.height) / 2;
+
+      const maxTop = Math.max(0, box.scrollHeight - box.clientHeight);
+      const top = Math.min(Math.max(0, box.scrollTop + delta), maxTop);
+      if (Math.abs(top - box.scrollTop) < 2) { playlistPositioned = true; return; }
+
+      // Le tout premier positionnement est immediat : une animation lancee
+      // pendant le chargement de la page se fait interrompre et la liste
+      // resterait en haut. Ensuite, un changement de piste glisse en douceur.
+      box.scrollTo({ top, behavior: (force && playlistPositioned) ? 'smooth' : 'auto' });
+      playlistPositioned = true;
+    }
+
+    // Un defilement declenche par l'utilisateur suspend le recentrage : ces
+    // evenements ne viennent que d'une action humaine, contrairement a 'scroll'
+    // que le recentrage lui-meme provoque.
+    ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'keydown'].forEach(evt => {
+      els.playlist.addEventListener(evt, () => { lastManualScrollAt = Date.now(); },
+        { passive: true });
+    });
+
+    // La piste courante doit rester visible apres un changement de mise en page
+    window.addEventListener('resize', () => scrollPlaylistToCurrent(true));
+
+    async function loadPlaylist() {
+      try {
+        const response = await fetch(`${API_BASE}/playlist`);
+        const data = await response.json();
+        playbackState = data;
+        if (typeof data.fadeSeconds === 'number') fadeSeconds = data.fadeSeconds;
+
+        els.playlistCount.textContent = data.playlist.length;
+
+        renderPlaylist(data);
+
+        // Charger la piste actuelle
+		if (data.playlist[data.currentIndex]) {
+		  const track = data.playlist[data.currentIndex];
+
+		  // Ne pas recharger la piste si elle est déjà en cours de lecture
+		  if (
+			!currentTrack ||
+			currentTrack.id !== track.id ||
+			currentTrack.source !== track.source ||
+			awaitingDownload
+		  ) {
+			loadTrack(data.currentIndex);
+		  } else if (currentTrack.lyricsState !== track.lyricsState) {
+			// Les paroles sont arrivées après le début de la lecture
+			currentTrack.lyrics = track.lyrics;
+			currentTrack.plainLyrics = track.plainLyrics;
+			currentTrack.lyricsState = track.lyricsState;
+			renderTrackLyrics(track);
+		  }
+		} else {
+          els.trackTitle.textContent = 'Playlist vide';
+          els.trackArtist.textContent = 'Ajoutez des chansons pour commencer';
+          els.status.textContent = 'En attente de chansons...';
+          if (!els.audio.paused) els.audio.pause();
+        }
+
+        // L'ecran obeit a l'admin : lecture, pause et position viennent d'ici
+        syncWithServer(data);
+      } catch (error) {
+        console.error('Erreur lors du chargement de la playlist:', error);
+      }
+    }
+
+    // ============= SUIVI DE L'ETAT DECIDE PAR L'ADMIN =============
+    let lastSeekSeq = null;
+
+    function syncWithServer(data) {
+      if (!currentTrack || awaitingDownload || givenUp) return;
+      if (!els.audio.getAttribute('src')) return;
+
+      // Deplacement demande depuis l'admin : on se cale sur sa position
+      if (lastSeekSeq !== null && data.seekSeq !== lastSeekSeq) {
+        const cible = data.playbackTime || 0;
+        logPlayback(`position imposée par l'admin : ${Math.round(cible)} s`);
+        if (els.audio.readyState > 0) {
+          try { els.audio.currentTime = cible; } catch (error) { pendingSeek = cible; }
+        } else {
+          pendingSeek = cible;
+        }
+        resetPlaybackWatch();
+      }
+      lastSeekSeq = data.seekSeq;
+
+      // Lecture / pause : l'ecran suit, il ne decide pas
+      if (data.isPlaying && els.audio.paused) {
+        enginePlay();
+      } else if (!data.isPlaying && !els.audio.paused) {
+        els.audio.pause();
+      }
+    }
+
+    // La position remonte au serveur : l'admin sait ou en est le morceau, et
+    // un rafraichissement de cet ecran reprend au bon endroit.
+    function reportPosition() {
+      if (!currentTrack || awaitingDownload || els.audio.paused) return;
+      const position = engineCurrentTime();
+      if (position > 0) reportPlayerEvent('position', { time: Math.round(position) });
+    }
+
+    // ============= COMPTE RENDU VERS LE SERVEUR =============
+    // Cet ecran ne commande rien. Il signale seulement ce qu'il constate :
+    // la piste est finie, elle est illisible, ou en voici la position.
+    // Les commandes (lecture, pause, piste suivante) viennent de /admin.
+    async function reportPlayerEvent(type, extra) {
+      if (!playbackState || typeof playbackState.currentIndex !== 'number') return null;
+
+      try {
+        const response = await fetch(`${API_BASE}/player/event`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type, index: playbackState.currentIndex, ...(extra || {}) })
+        });
+        return await response.json();
+      } catch (error) {
+        console.error('Compte rendu impossible:', error);
+        return null;
+      }
+    }
+
+    // Fin de morceau ou piste illisible : le serveur decide de la suite
+    async function askNextTrack(type) {
+      const resultat = await reportPlayerEvent(type);
+      loadPlaylist();
+      return resultat;
+    }
+
+    // ============= LECTURE =============
+    function resetAudio() {
+      els.audio.pause();
+      els.audio.removeAttribute('src');
+      els.audio.load();
+    }
+
+    function engineCurrentTime() {
+      return els.audio.currentTime || 0;
+    }
+
+    function engineDuration() {
+      const d = els.audio.duration;
+      if (isFinite(d) && d > 0) return d;
+      return currentTrack ? currentTrack.duration : 0;
+    }
+
+    function enginePlay() {
+      els.audio.play()
+        .then(() => els.soundUnlock.classList.remove('active'))
+        .catch(error => {
+          // Le navigateur exige un geste avant de laisser sortir du son
+          if (error && error.name === 'NotAllowedError') {
+            els.soundUnlock.classList.add('active');
+          } else if (error) {
+            logPlayback('lecture refusée', { erreur: error.message });
+          }
+        });
+    }
+
+    // Un clic n'importe ou sur l'ecran de deverrouillage suffit
+    els.soundUnlock.addEventListener('click', () => {
+      els.soundUnlock.classList.remove('active');
+      enginePlay();
+    });
+
+    async function loadTrack(index) {
+      try {
+        const response = await fetch(`${API_BASE}/playlist`);
+        const data = await response.json();
+        const track = data.playlist[index];
+
+        if (!track) return;
+
+        currentTrack = track;
+        els.trackTitle.textContent = track.title;
+        els.trackArtist.textContent = track.artist;
+        els.duration.textContent = formatTime(track.duration);
+
+        // Pochette (masquée quand la vidéo prend la place)
+        if (track.coverArt) {
+          els.albumArtContent.innerHTML = `<img src="${track.coverArt}" alt="Album">`;
+          els.albumArt.classList.remove('no-cover');
+        } else {
+          els.albumArtContent.innerHTML = '🎵';
+          els.albumArt.classList.add('no-cover');
+        }
+
+        renderTrackLyrics(track);
+
+        // Une piste Soulseek doit d'abord finir de se télécharger
+        if (track.source === 'soulseek' && track.downloadStatus !== 'ready') {
+          awaitingDownload = true;
+          resetAudio();
+          // Le lecteur n'affiche pas la provenance des pistes
+          els.sourceBadge.textContent = '';
+          els.sourceBadge.classList.remove('visible');
+
+          if (track.downloadStatus === 'failed') {
+            els.status.textContent = 'Lecture impossible — passage à la suivante';
+            setTimeout(() => askNextTrack('failed'), 3000);
+          } else {
+            els.status.textContent = 'Chargement en cours...';
+          }
+
+          return;
+        }
+
+        awaitingDownload = false;
+        els.sourceBadge.textContent = '';
+        els.sourceBadge.classList.remove('visible');
+
+        resetPlaybackWatch();
+        demarrerFonduEntree();
+
+        // currentTime avant le chargement des metadonnees est ignore par le
+        // navigateur : on memorise la position et on l'applique a l'evenement
+        // loadedmetadata (voir plus bas).
+        pendingSeek = data.playbackTime > 0 ? data.playbackTime : null;
+        els.audio.src = `/api/stream/${track.source}/${track.id}`;
+
+        if (data.isPlaying) {
+          enginePlay();
+        }
+
+        els.status.textContent = `Piste ${index + 1}/${data.playlist.length}`;
+      } catch (error) {
+        console.error('Erreur lors du chargement de la piste:', error);
+      }
+    }
+
+    // Deux cas seulement : paroles synchronisées (elles défilent, c'est ce
+    // qui fait leur intérêt sur un écran de soirée) ou rien. Un texte non
+    // synchronisé reste figé pendant tout le morceau : il occupe un tiers de
+    // l'écran sans rien apporter, on rend la place à la pochette.
+    // On attend que l'état soit tranché : basculer pendant la recherche
+    // ferait sauter la mise en page pour rien.
+    function applyLyricsLayout(track) {
+      const settled = Boolean(track.lyricsState) && track.lyricsState !== 'pending';
+      const synced = Boolean(track.lyrics);
+      document.body.classList.toggle('sans-paroles', settled && !synced);
+    }
+
+    function renderTrackLyrics(track) {
+      const badge = els.lyricsBadge;
+
+      activeLyricLine = null;
+      applyLyricsLayout(track);
+
+      if (track.lyrics) {
+        badge.textContent = 'synchronisées';
+        renderLyrics(track.lyrics);
+        return;
+      }
+
+      badge.textContent = '';
+
+      // Le panneau est masqué dans ces cas-là ; le message ne sert que le
+      // temps de la recherche, ou si la bascule de mise en page tarde.
+      const messages = {
+        pending: 'Recherche des paroles...',
+        instrumental: 'Morceau instrumental',
+        plain: 'Paroles non synchronisées — non affichées',
+        none: 'Pas de paroles trouvées'
+      };
+      els.lyricsContainer.innerHTML =
+        `<div class="no-lyrics">${messages[track.lyricsState] || 'Pas de paroles disponibles'}</div>`;
+    }
+
+    function escapeHtml(str) {
+      return String(str == null ? '' : str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderLyrics(lrcContent) {
+      // LRCLIB écrit [mm:ss.xx], parfois avec des minutes à un chiffre.
+      // On garde les centièmes : le surlignage est nettement plus juste.
+      const parsed = lrcContent.split('\n').map(line => {
+        const match = line.match(/\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)/);
+        if (!match) return null;
+
+        const fraction = match[3] ? parseInt(match[3], 10) / Math.pow(10, match[3].length) : 0;
+        const time = parseInt(match[1], 10) * 60 + parseInt(match[2], 10) + fraction;
+        return { time, text: (match[4] || '').trim() };
+      }).filter(Boolean).sort((a, b) => a.time - b.time);
+
+      els.lyricsContainer.innerHTML = parsed.map((line, idx) => `
+        <div class="lyric-line" data-time="${line.time}">
+          ${escapeHtml(line.text) || '&nbsp;'}
+        </div>
+      `).join('');
+    }
+
+    let activeLyricLine = null;
+
+    function updateLyricsHighlight(currentTime) {
+      if (!currentTrack) return;
+
+      const lines = els.lyricsContainer.querySelectorAll('.lyric-line[data-time]');
+      if (!lines.length) return;
+
+      // La ligne courante est la dernière dont l'horodatage est dépassé :
+      // fiable même après un saut dans le morceau, contrairement à une
+      // comparaison par fenêtre.
+      let current = null;
+      for (const line of lines) {
+        if (parseFloat(line.dataset.time) <= currentTime) current = line;
+        else break;
+      }
+
+      if (current === activeLyricLine) return;
+
+      if (activeLyricLine) activeLyricLine.classList.remove('active');
+      activeLyricLine = current;
+
+      if (current) {
+        current.classList.add('active');
+        // Défilement uniquement au changement de ligne
+        current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+
+    // Barre de progression et paroles : une seule horloge, quel que soit le moteur
+    function updateProgress() {
+      const current = engineCurrentTime();
+      const duration = engineDuration();
+
+      if (duration > 0) {
+        els.progressFill.style.width = Math.min(100, (current / duration) * 100) + '%';
+        els.duration.textContent = formatTime(duration);
+      }
+      els.currentTime.textContent = formatTime(current);
+
+      updateLyricsHighlight(current);
+    }
+
+    // ============= FONDU ENTRE LES CHANSONS =============
+    // Le fondu de sortie suit le temps restant réel plutôt qu'une minuterie :
+    // il reste juste même après un saut ou une reprise de flux.
+    function demarrerFonduEntree() {
+      fadeOutDemande = false;
+      if (fadeSeconds <= 0) { els.audio.volume = 1; fadeIn = null; return; }
+      fadeIn = { debut: Date.now(), duree: fadeSeconds * 1000 };
+      els.audio.volume = 0;
+    }
+
+    function tempsRestant() {
+      const duree = els.audio.duration;
+      if (!isFinite(duree) || duree <= 0) return Infinity;
+      return duree - els.audio.currentTime;
+    }
+
+    function tickFondu() {
+      if (!currentTrack || awaitingDownload || !els.audio.getAttribute('src')) return;
+
+      const restant = tempsRestant();
+
+      // Fin du morceau : on descend, puis on demande la suite sans attendre
+      // l'évènement « ended » — le silence est déjà installé.
+      if (fadeSeconds > 0 && !els.audio.paused && restant <= fadeSeconds) {
+        fadeIn = null;
+        els.audio.volume = Math.max(0, Math.min(1, restant / fadeSeconds));
+
+        if (restant <= 0.25 && !fadeOutDemande && !givenUp) {
+          fadeOutDemande = true;
+          askNextTrack('ended');
+        }
+        return;
+      }
+
+      if (fadeIn) {
+        const avance = (Date.now() - fadeIn.debut) / fadeIn.duree;
+        els.audio.volume = Math.max(0, Math.min(1, avance));
+        if (avance >= 1) fadeIn = null;
+        return;
+      }
+
+      // En dehors de tout fondu, le son reste à plein volume
+      if (els.audio.volume !== 1) els.audio.volume = 1;
+    }
+
+    setInterval(tickFondu, 50);
+
+    // ============= SURVEILLANCE DE LA LECTURE =============
+    // Un flux peut se couper en plein morceau (reseau, source lente, fichier
+    // rendu indisponible). Plutot que de s'arreter sans explication, le
+    // lecteur reprend la ou il en etait, et ne passe a la suite qu'en dernier
+    // recours. Chaque incident est trace : voir dumpPlaybackLog() en console.
+    const MAX_RECOVERIES = 3;
+    const STALL_AFTER_MS = 6000;      // avance nulle avant de tenter une reprise
+    let pendingSeek = null;           // position a appliquer au chargement
+    let recoveryCount = 0;
+    let lastPosition = 0;
+    let lastProgressAt = Date.now();
+    let lastRecoveryAt = 0;
+    let recoveryPosition = null;      // position a retrouver pendant les reprises
+    let givenUp = false;              // piste abandonnee : on ne s'acharne pas
+    const playbackLog = [];
+
+    function logPlayback(message, extra) {
+      const line = {
+        heure: new Date().toISOString(),
+        piste: currentTrack ? `${currentTrack.artist} — ${currentTrack.title}` : '—',
+        position: Math.round(engineCurrentTime()),
+        message,
+        ...(extra || {})
+      };
+      playbackLog.push(line);
+      if (playbackLog.length > 100) playbackLog.shift();
+      console.warn('[lecture]', message, line);
+    }
+
+    // Tapez dumpPlaybackLog() dans la console pour savoir ce qui s'est passe
+    window.dumpPlaybackLog = () => { console.table(playbackLog); return playbackLog; };
+
+    function resetPlaybackWatch() {
+      recoveryCount = 0;
+      recoveryPosition = null;
+      givenUp = false;
+      lastPosition = 0;
+      lastProgressAt = Date.now();
+    }
+
+    // Le morceau reprend a l'endroit exact ou il s'est interrompu
+    function resumePlayback(position, raison) {
+      if (!currentTrack || givenUp) return false;
+
+      // Trop de tentatives : c'est a l'appelant de decider de la suite
+      if (recoveryCount >= MAX_RECOVERIES) {
+        logPlayback(`abandon apres ${recoveryCount} reprises (${raison})`);
+        return false;
+      }
+
+      recoveryCount++;
+
+      // Une tentative ratee remet le lecteur a zero : on garde la position
+      // d'origine, sinon le morceau repartirait du debut a chaque essai.
+      position = recoveryPosition != null
+        ? Math.max(recoveryPosition, position)
+        : position;
+      recoveryPosition = position;
+
+      // Deux secondes entre deux tentatives : une coupure passagere a le
+      // temps de se resorber, au lieu d'epuiser les essais en une seconde.
+      const attente = Math.max(0, 2000 - (Date.now() - lastRecoveryAt));
+      lastRecoveryAt = Date.now() + attente;
+      lastProgressAt = Date.now() + attente;
+
+      logPlayback(`reprise a ${Math.round(position)} s (${raison})`, { tentative: recoveryCount });
+      els.status.textContent = 'Reprise de la lecture...';
+
+      const piste = currentTrack;
+      setTimeout(() => {
+        if (currentTrack !== piste) return;   // on a change de morceau entre-temps
+        demarrerFonduEntree();
+        pendingSeek = position;
+        // Parametre anti-cache : on veut une vraie nouvelle requete, pas la
+        // reponse partielle que le navigateur a peut-etre gardee.
+        els.audio.src = `/api/stream/${piste.source}/${piste.id}?r=${Date.now()}`;
+        els.audio.load();
+        els.audio.play().catch(() => {});
+      }, attente);
+
+      return true;
+    }
+
+    els.audio.addEventListener('loadedmetadata', () => {
+      if (pendingSeek != null) {
+        try { els.audio.currentTime = pendingSeek; } catch (error) { /* ignore */ }
+        pendingSeek = null;
+      }
+    });
+
+    els.audio.addEventListener('ended', () => {
+      if (givenUp) return;          // saut de piste deja programme
+      if (fadeOutDemande) return;   // le fondu de sortie a deja demande la suite
+      const position = engineCurrentTime();
+      const reelle = els.audio.duration;
+      const annoncee = currentTrack ? currentTrack.duration : 0;
+
+      // On retient la plus longue des deux durees : un flux tronque fait
+      // croire au navigateur que le fichier est court, alors que la fiche du
+      // morceau, elle, connait sa vraie duree.
+      const duree = Math.max(isFinite(reelle) && reelle > 0 ? reelle : 0, annoncee || 0);
+
+      // Fin annoncee trop tot : le flux a ete coupe, ce n'est pas la fin du
+      // morceau. On reprend au lieu de sauter a la piste suivante. La marge
+      // de 10 s evite de se tromper quand la duree du fichier est mal
+      // renseignee (frequent sur Soulseek).
+      if (duree - position > 10 && resumePlayback(position, 'flux coupé avant la fin')) {
+        return;
+      }
+
+      askNextTrack('ended');
+    });
+
+    els.audio.addEventListener('error', () => {
+      if (!currentTrack || givenUp || !els.audio.getAttribute('src')) return;
+      const media = els.audio.error;
+      logPlayback('erreur du lecteur audio', { code: media ? media.code : null });
+
+      if (!resumePlayback(engineCurrentTime(), 'erreur de lecture')) abandonnerLaPiste();
+    });
+
+    // Renoncer une bonne fois : sans ce verrou, chaque nouvelle tentative
+    // relancerait un saut de piste et viderait la playlist en quelques
+    // secondes si la source reste injoignable.
+    function abandonnerLaPiste() {
+      if (givenUp) return;
+      givenUp = true;
+      els.status.textContent = 'Lecture impossible — passage à la suivante';
+      setTimeout(() => askNextTrack('failed'), 2000);
+    }
+
+    // Diagnostic : ces evenements precedent souvent un arret silencieux
+    ['stalled', 'waiting', 'suspend', 'abort', 'emptied'].forEach(evt => {
+      els.audio.addEventListener(evt, () => {
+        if (evt === 'waiting' || evt === 'stalled') logPlayback('flux en attente (' + evt + ')');
+      });
+    });
+
+    // Chien de garde : si la lecture devrait avancer et n'avance plus, on agit
+    function watchPlayback() {
+      if (!currentTrack || awaitingDownload || givenUp) return;
+      if (!els.audio.getAttribute('src')) return;
+      if (!playbackState || !playbackState.isPlaying) return;   // pause demandée par l'admin
+
+      const position = engineCurrentTime();
+      const now = Date.now();
+
+      // La lecture avance : tout va bien
+      if (position - lastPosition > 0.15) {
+        lastPosition = position;
+        lastProgressAt = now;
+        recoveryCount = 0;
+        recoveryPosition = null;
+        return;
+      }
+
+      // Retour en arriere : rechargement du flux ou saut demande. Ce n'est
+      // pas un blocage, mais ce n'est pas non plus une lecture qui avance :
+      // on ne remet pas le compteur de reprises a zero.
+      if (position < lastPosition - 0.15) {
+        lastPosition = position;
+        lastProgressAt = now;
+        return;
+      }
+
+      if (now - lastProgressAt < STALL_AFTER_MS) return;
+
+      // Mise en pause qu'on n'a pas demandee (autoplay refuse, flux ferme) :
+      // il suffit souvent de relancer.
+      if (els.audio.paused) {
+        logPlayback('lecture en pause sans raison connue, relance');
+        lastProgressAt = now;
+        els.audio.play().catch(() => {
+          els.status.textContent = 'Cliquez sur ▶ pour lancer la lecture';
+        });
+        return;
+      }
+
+      // Le lecteur se croit en lecture mais le temps ne bouge plus :
+      // le tampon est a sec, on recharge le flux a la bonne position.
+      if (!resumePlayback(position, 'lecture figée')) abandonnerLaPiste();
+    }
+
+    setInterval(watchPlayback, 1000);
+    setInterval(reportPosition, 5000);
+
+    // Adresse affichee sous le QR code (celle que le QR encode)
+    (async function afficherAdresseInvite() {
+      try {
+        const config = await (await fetch(`${API_BASE}/config`)).json();
+        if (config && config.guestUrl) {
+          const lien = document.getElementById('joinUrl');
+          lien.textContent = config.guestUrl.replace(/^https?:\/\//, '');
+          lien.href = config.guestUrl;   // le texte est raccourci, pas le lien
+        }
+      } catch (error) {
+        console.warn('Adresse invité indisponible');
+      }
+    })();
+
+    // Une seule horloge pour la barre de progression et les paroles
+    setInterval(updateProgress, 250);
+
+    loadPlaylist();
+    setInterval(loadPlaylist, 2000);
+
+    /* ── VISUALISEUR AUDIO (waveform) ─────────────────────────────────
+       Onde symétrique autour de l'axe central, barres arrondies et
+       halo néon : même langage visuel que Cortex Radio, mais lisible
+       dans une bande large et basse.
+       - avant tout geste / en pause → onde sinusoïdale douce
+       - en lecture                  → vraies données FFT du flux joué
+       L'AnalyserNode n'est branché QUE lors d'un geste utilisateur :
+       créer le graphe audio avec un AudioContext suspendu couperait
+       le son sur les navigateurs qui bloquent l'autoplay.
+       ──────────────────────────────────────────────────────────────── */
+    (function () {
+      const canvas = document.getElementById('visualizer');
+      if (!canvas) return;
+      const vctx = canvas.getContext('2d');
+      const audio = document.getElementById('audioPlayer');
+
+      const BARS = 30;          // nombre de barres affichées
+      const GAP = 4;            // espace entre deux barres, en px
+      const MIN_BAR = 4;        // hauteur minimale : l'onde ne disparaît jamais
+      const REPOS = 0.5;        // amplitude de l'onde au repos (0 à 1)
+
+      let audioCtx = null;
+      let analyser = null;
+      let donnees = null;
+      let idlePhase = 0;
+      let amplitude = REPOS;
+      let niveaux = new Array(BARS).fill(0);   // lissage temporel des barres
+      let W = 0;
+      let H = 0;
+
+      // La largeur du canvas suit celle de la pochette (--stack-w), qui change
+      // sans qu'il y ait de "resize" de fenetre : quand les paroles se masquent,
+      // par exemple. Si la resolution interne ne suit pas, le navigateur etire
+      // l'ancienne image et l'onde apparait pixelisee. On surveille donc la
+      // taille reelle de l'element, et la densite d'ecran (changement de moniteur).
+      let dprActuel = 0;
+
+      function resizeVisualizer() {
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth;
+        const h = canvas.clientHeight;
+        if (!w || !h) return;
+        if (w === W && h === H && dpr === dprActuel) return;
+
+        W = w;
+        H = h;
+        dprActuel = dpr;
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        vctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+
+      resizeVisualizer();
+      window.addEventListener('resize', resizeVisualizer);
+
+      const observateur = window.ResizeObserver
+        ? new ResizeObserver(() => resizeVisualizer())
+        : null;
+      if (observateur) observateur.observe(canvas);
+
+      function brancherAnalyser() {
+        if (audioCtx) {
+          if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+          return;
+        }
+        try {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 128;
+          analyser.smoothingTimeConstant = 0.75;
+          donnees = new Uint8Array(analyser.frequencyBinCount);
+          const source = audioCtx.createMediaElementSource(audio);
+          source.connect(analyser);
+          analyser.connect(audioCtx.destination);
+        } catch (error) {
+          // Pas de Web Audio : on garde l'onde décorative, le son reste intact
+          audioCtx = null;
+          analyser = null;
+        }
+      }
+
+      ['click', 'touchstart', 'keydown'].forEach((evt) => {
+        document.addEventListener(evt, brancherAnalyser, { passive: true });
+      });
+
+      // Barre arrondie, avec repli si roundRect n'existe pas
+      function barre(x, y, w, h, r) {
+        if (vctx.roundRect) {
+          vctx.beginPath();
+          vctx.roundRect(x, y, w, h, r);
+          vctx.fill();
+        } else {
+          vctx.fillRect(x, y, w, h);
+        }
+      }
+
+      function dessiner() {
+        requestAnimationFrame(dessiner);
+        // Avec ResizeObserver la taille est deja a jour ; sinon on verifie ici
+        if (!observateur || !W || !H) resizeVisualizer();
+        vctx.clearRect(0, 0, W, H);
+
+        const enLecture = audio && !audio.paused && !audio.ended && audio.readyState > 2;
+        amplitude += ((enLecture ? 1 : REPOS) - amplitude) * 0.05;
+
+        // 1. valeur cible de chaque barre, entre 0 et 1
+        let cibles;
+        if (analyser && enLecture) {
+          analyser.getByteFrequencyData(donnees);
+          // On ignore le haut du spectre, presque toujours vide sur de la musique
+          const utiles = Math.floor(donnees.length * 0.72);
+          let maxVal = 1;
+          for (let i = 0; i < utiles; i++) if (donnees[i] > maxVal) maxVal = donnees[i];
+          cibles = new Array(BARS);
+          for (let i = 0; i < BARS; i++) {
+            const idx = Math.floor((i / BARS) * utiles);
+            cibles[i] = donnees[idx] / maxVal;
+          }
+        } else {
+          idlePhase += 0.035;
+          cibles = new Array(BARS);
+          for (let i = 0; i < BARS; i++) {
+            // Deux sinusoïdes superposées : l'onde au repos ne se répète pas
+            const a = Math.sin(idlePhase + i * 0.38);
+            const b = Math.sin(idlePhase * 0.6 + i * 0.17);
+            cibles[i] = (a * 0.65 + b * 0.35 + 1) / 2;
+          }
+        }
+
+        // 2. lissage, pour que les barres montent et redescendent en douceur
+        for (let i = 0; i < BARS; i++) {
+          niveaux[i] += (cibles[i] - niveaux[i]) * (enLecture ? 0.35 : 0.12);
+        }
+
+        // 3. tracé : onde miroir autour de l'axe central
+        // Bords nets : on cale les barres sur la grille de pixels physiques,
+        // sinon chaque bord est etale sur deux pixels et l'onde parait floue.
+        const grille = v => Math.round(v * dprActuel) / dprActuel;
+        const largeur = grille(Math.max(2, (W - GAP * (BARS - 1)) / BARS));
+        const centre = H / 2;
+        const hauteurMax = H - 4;
+        const rayon = Math.min(largeur, 6) / 2;
+
+        const degrade = vctx.createLinearGradient(0, 0, 0, H);
+        degrade.addColorStop(0, 'rgba(0, 229, 255, 0.95)');
+        degrade.addColorStop(0.5, 'rgba(120, 245, 255, 0.95)');
+        degrade.addColorStop(1, 'rgba(0, 229, 255, 0.95)');
+
+        vctx.fillStyle = degrade;
+        vctx.globalAlpha = 0.45 + 0.55 * amplitude;
+        vctx.shadowColor = 'rgba(0, 229, 255, 0.55)';
+        vctx.shadowBlur = 10;
+
+        for (let i = 0; i < BARS; i++) {
+          const h = grille(Math.max(MIN_BAR, niveaux[i] * hauteurMax * amplitude));
+          const x = grille(i * (largeur + GAP));
+          barre(x, grille(centre - h / 2), largeur, h, rayon);
+        }
+
+        vctx.shadowBlur = 0;
+        vctx.globalAlpha = 1;
+      }
+      dessiner();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,152 @@
+version: '3.8'
+
+services:
+  # Application Jukebox
+  jukebox:
+    build: .
+    container_name: jukebox
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      
+      # Navidrome
+      NAVIDROME_ENABLED: ${NAVIDROME_ENABLED:-true}
+      NAVIDROME_URL: http://navidrome:4533
+      NAVIDROME_USER: ${NAVIDROME_USER:-admin}
+      NAVIDROME_PASS: ${NAVIDROME_PASS:-password}
+      
+      # Soulseek (via sockseek)
+      SOULSEEK_ENABLED: ${SOULSEEK_ENABLED:-true}
+      SOCKSEEK_PATH: ${SOCKSEEK_PATH:-sockseek}
+      SOCKSEEK_REMOTE: ${SOCKSEEK_REMOTE:-http://127.0.0.1:5030}
+      # sockseek n'est pas dans l'image : le démon tourne à côté
+      SOCKSEEK_AUTOSTART: ${SOCKSEEK_AUTOSTART:-false}
+      # Adresse publique pour le QR code et le lien invité (vide = déduite)
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      SOULSEEK_DELETE_AFTER_PLAY: ${SOULSEEK_DELETE_AFTER_PLAY:-true}
+      
+      # Jukebox Settings
+      MAX_SONGS_PER_USER: ${MAX_SONGS_PER_USER:-3}
+      COOLDOWN_MINUTES: ${COOLDOWN_MINUTES:-5}
+      SESSION_DURATION: ${SESSION_DURATION:-120}
+    
+    depends_on:
+      - navidrome
+    
+    networks:
+      - jukebox-network
+    
+    volumes:
+      - ./jukebox-server.js:/app/jukebox-server.js:ro
+      - ./qrcode.js:/app/qrcode.js:ro
+      - ./public:/app/public:ro
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/config"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Navidrome - Serveur de musique
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+    ports:
+      - "4533:4533"
+    
+    environment:
+      ND_LOGLEVEL: info
+      ND_SCANINTERVAL: 60m
+      ND_BASEURL: /navidrome
+      # Changer si vous utilisez un SSL
+      # ND_ENABLEEXTERNALAPI: "true"
+    
+    volumes:
+      # Musique
+      - ${MUSIC_PATH:-./music}:/music:ro
+      # Données Navidrome
+      - navidrome_data:/data
+    
+    networks:
+      - jukebox-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4533/rest/ping.json?u=admin&p=admin&c=jukebox&v=1.12.0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Nginx - Reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: jukebox-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      # Dé-commenter pour HTTPS
+      # - "443:443"
+    
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Certificats SSL (si HTTPS)
+      # - ./certs:/etc/nginx/certs:ro
+    
+    networks:
+      - jukebox-network
+    
+    depends_on:
+      - jukebox
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  jukebox-network:
+    driver: bridge
+
+volumes:
+  navidrome_data:
+    driver: local
+
+# ============= QUICK START =============
+# 1. Créer fichier .env:
+#    cp .env.example .env
+#    nano .env  # Éditer
+#
+# 2. Préparer la musique:
+#    mkdir -p ./music
+#    # Copier vos fichiers MP3/FLAC dans ./music
+#
+# 3. Lancer:
+#    docker-compose up -d
+#
+# 4. Accédez à:
+#    - Jukebox: http://localhost
+#    - Jukebox Admin: http://localhost/admin
+#    - Navidrome: http://localhost:4533
+#
+# 5. Admin credentials:
+#    Jukebox: utiliser ADMIN_PASSWORD
+#    Navidrome: admin / admin (par défaut)
+#
+# ============= COMMANDS =============
+# Voir logs: docker-compose logs -f
+# Arrêter: docker-compose down
+# Redémarrer: docker-compose restart
+# Nettoyer: docker-compose down -v

@@ -1,0 +1,2587 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🎵 Jukebox - Admin</title>
+  <style>
+    /* ═══════════════════════════════════════════════════════
+       Thème « Cortex » — aligné sur index.html
+       Fond radial sombre, verre dépoli, accent néon cyan.
+       ═══════════════════════════════════════════════════════ */
+    :root {
+      --neon: #00e5ff;
+      --bg1: #0b0b15;
+      --bg2: #141428;
+      --card: rgba(255, 255, 255, 0.06);
+      --border: rgba(255, 255, 255, 0.08);
+      --muted: rgba(255, 255, 255, 0.55);
+      --muted-dim: rgba(255, 255, 255, 0.38);
+      --danger: #ff5c7a;
+      --ok: #34d399;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      background: radial-gradient(circle at top, var(--bg2), var(--bg1));
+      background-attachment: fixed;
+      color: #fff;
+      overflow: hidden;
+      height: 100vh;
+    }
+
+    .container {
+      display: grid;
+      grid-template-columns: 1fr 2fr 1fr;
+      height: 100vh;
+      gap: 18px;
+      padding: 18px;
+    }
+
+    .section {
+      background: var(--card);
+      border-radius: 22px;
+      padding: 20px;
+      backdrop-filter: blur(18px);
+      border: 1px solid var(--border);
+      box-shadow: 0 0 40px rgba(0, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: fadeIn .6s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(15px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    h2 {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: .3px;
+      margin-bottom: 15px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 15px;
+      flex-wrap: wrap;
+    }
+
+    .btn-group button {
+      flex: 1;
+    }
+
+    /* Boutons pilule néon, comme sur Cortex Radio */
+    button, input[type="password"] {
+      background: var(--neon);
+      color: #000;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 50px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+      font-weight: 700;
+      box-shadow: 0 0 14px rgba(0, 229, 255, .25);
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 0 24px rgba(0, 229, 255, 0.6);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button.danger {
+      background: var(--danger);
+      color: #180007;
+      box-shadow: 0 0 14px rgba(255, 92, 122, .25);
+    }
+
+    button.danger:hover {
+      box-shadow: 0 0 24px rgba(255, 92, 122, 0.6);
+    }
+
+    button.secondary {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: #fff;
+      box-shadow: none;
+      font-weight: 600;
+    }
+
+    button.secondary:hover {
+      background: rgba(0, 229, 255, 0.15);
+      border-color: rgba(0, 229, 255, 0.45);
+      color: var(--neon);
+      box-shadow: none;
+    }
+
+    .login-form {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    input[type="password"] {
+      flex: 1;
+      padding: 10px 16px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 10px;
+      color: #fff;
+      font-weight: 400;
+      box-shadow: none;
+    }
+
+    input[type="password"]:focus {
+      outline: none;
+      border-color: rgba(0, 229, 255, 0.55);
+      box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.12);
+    }
+
+    .controls-section {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      /* Sur un écran peu haut, cette colonne dépasse : elle défile d'elle-même,
+         sinon le bouton « Appliquer » reste hors de portée. */
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    .control-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .control-row button {
+      flex: 1;
+    }
+
+    .playlist-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .playlist {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .playlist-item {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      padding: 12px;
+      border-radius: 12px;
+      border-left: 3px solid transparent;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      min-height: 50px;
+      transition: background .2s, border-color .2s;
+    }
+
+    .playlist-item:hover {
+      background: rgba(255, 255, 255, 0.07);
+      border-color: rgba(0, 229, 255, 0.22);
+    }
+
+    .playlist-item.current {
+      background: linear-gradient(90deg, rgba(0, 229, 255, 0.22) 0%, rgba(0, 229, 255, 0.04) 100%);
+      border-left-color: var(--neon);
+      border-color: rgba(0, 229, 255, 0.35);
+      box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.2), 0 8px 24px rgba(0, 229, 255, 0.15);
+      font-weight: bold;
+    }
+
+    .item-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    /* ── Réorganisation par glisser-déposer ───────────────────────
+       La poignée sert au tactile (touch-action: none pour que le
+       doigt déplace la piste au lieu de faire défiler la page) ; à
+       la souris, toute la ligne est saisissable. */
+    #playlist .playlist-item {
+      cursor: grab;
+      user-select: none;
+    }
+
+    /* Pendant le glissé, la ligne marque l'emplacement de dépôt :
+       cadre néon en pointillés, contenu estompé. */
+    #playlist .playlist-item.dragging,
+    #playlist .playlist-item.dragging.current {
+      cursor: grabbing;
+      background: rgba(0, 229, 255, 0.12);
+      border: 1px dashed rgba(0, 229, 255, 0.8);
+      border-left: 3px dashed rgba(0, 229, 255, 0.8);
+      box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.18),
+                  0 0 28px rgba(0, 229, 255, 0.28) inset;
+      transform: none;
+    }
+
+    #playlist .playlist-item.dragging .item-info {
+      opacity: 0.55;
+    }
+
+    #playlist .playlist-item.dragging .item-actions {
+      opacity: 0.25;
+      pointer-events: none;
+    }
+
+    #playlist .playlist-item.dragging .drag-handle {
+      color: var(--neon);
+    }
+
+    .drag-handle {
+      flex: none;
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+      padding: 0 6px 0 0;
+      margin: -12px 0 -12px -2px;
+      color: var(--muted-dim);
+      font-size: 16px;
+      line-height: 1;
+      cursor: grab;
+      touch-action: none;
+      transition: color 0.2s;
+    }
+
+    .drag-handle:hover {
+      color: var(--neon);
+    }
+
+    .item-title {
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .item-meta {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    /* ---- Recherche et ajout par l'admin ---- */
+
+    .admin-search {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .search-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .search-row input {
+      flex: 1;
+      min-width: 0;
+      padding: 10px 16px;
+      border-radius: 10px;
+      font-size: 12px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: #fff;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+
+    .search-row input:focus {
+      border-color: rgba(0, 229, 255, 0.55);
+      box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.12);
+    }
+
+    /* Pendant la recherche, le bouton propose d'arrêter */
+    button.cancel {
+      background: var(--danger);
+      color: #180007;
+    }
+
+    button.added {
+      background: var(--ok);
+      color: #002a1c;
+      box-shadow: 0 0 14px rgba(52, 211, 153, .3);
+    }
+
+    button.duplicate {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: var(--muted);
+      box-shadow: none;
+    }
+
+    button:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+
+    button:disabled:hover {
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* Les résultats ne doivent pas chasser la playlist de l'écran :
+       ils occupent au plus la moitié de la colonne et défilent. */
+    .search-results {
+      max-height: 42vh;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .search-results .playlist-item {
+      border-left-color: rgba(0, 229, 255, 0.45);
+    }
+
+    .results-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .results-head button {
+      padding: 5px 12px;
+      font-size: 11px;
+    }
+
+    .search-message {
+      font-size: 11px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .search-message.error {
+      background: rgba(255, 92, 122, 0.12);
+      border-color: rgba(255, 92, 122, 0.35);
+      color: var(--danger);
+    }
+
+    .search-message.success {
+      background: rgba(52, 211, 153, 0.12);
+      border-color: rgba(52, 211, 153, 0.35);
+      color: var(--ok);
+    }
+
+    /* Barre de progression : une recherche Soulseek peut durer une demi-minute,
+       il faut voir qu'il se passe quelque chose. */
+    .search-progress-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .search-progress-time {
+      margin-left: auto;
+      font-variant-numeric: tabular-nums;
+      color: var(--neon);
+      font-weight: 600;
+    }
+
+    .search-progress-track {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+    }
+
+    .search-progress-bar {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(0, 229, 255, .5), var(--neon));
+      box-shadow: 0 0 12px rgba(0, 229, 255, .5);
+      transition: width 0.12s linear;
+    }
+
+    .search-progress-bar.overtime {
+      background: linear-gradient(90deg, var(--neon), #ffb347);
+      animation: pulse-bar 1.2s ease-in-out infinite;
+    }
+
+    @keyframes pulse-bar {
+      50% { opacity: 0.55; }
+    }
+
+    /* Champ de saisie d'un code : chiffres et lettres bien détachés,
+       mais l'invite de saisie reste lisible normalement */
+    .code-field {
+      letter-spacing: 2px;
+    }
+
+    .code-field::placeholder {
+      letter-spacing: normal;
+    }
+
+    /* Code de connexion : lisible d'un coup d'oeil, copiable d'un clic */
+    .item-code {
+      display: inline-block;
+      margin-top: 6px;
+      padding: 3px 10px;
+      border-radius: 50px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      color: var(--neon);
+      background: rgba(0, 229, 255, 0.12);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+      cursor: pointer;
+      user-select: all;
+      transition: background .2s, box-shadow .2s;
+    }
+
+    .item-code:hover {
+      background: rgba(0, 229, 255, 0.25);
+      box-shadow: 0 0 14px rgba(0, 229, 255, .35);
+    }
+
+    .item-actions {
+      display: flex;
+      gap: 5px;
+    }
+
+    .item-actions button {
+      padding: 5px 12px;
+      font-size: 11px;
+      width: auto;
+    }
+
+    .users-section {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .users-section input[type="text"] {
+      outline: none;
+    }
+
+    .users-section input[type="text"]:focus {
+      border-color: rgba(0, 229, 255, 0.55);
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .users-section .item-actions button {
+      padding: 5px 11px;
+    }
+
+    .item-actions button:disabled {
+      opacity: 0.25;
+      cursor: default;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .item-actions button:disabled:hover {
+      transform: none;
+      box-shadow: none;
+    }
+
+    .settings-box label {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      margin: 10px 0 4px;
+    }
+
+    .settings-box input[type="number"] {
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: 10px;
+      font-size: 12px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: #fff;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+
+    .settings-box input[type="number"]:focus {
+      border-color: rgba(0, 229, 255, 0.55);
+      box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.12);
+    }
+
+    /* ── Recommandations de quotas ────────────────────────────── */
+    .reco-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .reco-base {
+      font-size: 10px;
+      color: var(--muted);
+      text-align: right;
+    }
+
+    .reco-modes {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .reco-mode {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 7px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: rgba(255, 255, 255, 0.75);
+      box-shadow: none;
+    }
+
+    .reco-mode span {
+      font-size: 9px;
+      font-weight: 400;
+      opacity: 0.7;
+    }
+
+    .reco-mode:hover {
+      transform: none;
+      border-color: rgba(0, 229, 255, 0.4);
+      color: #fff;
+      box-shadow: none;
+    }
+
+    .reco-mode.active {
+      background: rgba(0, 229, 255, 0.16);
+      border-color: rgba(0, 229, 255, 0.55);
+      color: var(--neon);
+      box-shadow: 0 0 16px rgba(0, 229, 255, 0.15);
+    }
+
+    .reco-ligne {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 5px 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .reco-ligne:first-child {
+      border-top: none;
+    }
+
+    .reco-ligne-nom {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .reco-ligne-val {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      font-size: 11px;
+    }
+
+    .reco-actuel {
+      color: var(--muted-dim);
+    }
+
+    .reco-cible {
+      color: var(--neon);
+      font-weight: 700;
+    }
+
+    .reco-ligne.inchange .reco-cible {
+      color: var(--ok);
+    }
+
+    .reco-constats {
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .reco-constat {
+      display: flex;
+      gap: 7px;
+      align-items: flex-start;
+      font-size: 11px;
+      line-height: 1.45;
+      color: rgba(255, 255, 255, 0.72);
+    }
+
+    .reco-constat.alerte {
+      color: #fbbf24;
+    }
+
+    .reco-constat.ok {
+      color: var(--ok);
+    }
+    /* ── Quotas dynamiques (pilotage automatique) ─────────────── */
+    .reco-auto {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    /* La case à cocher est aussi un <label> : elle ne doit pas hériter
+       de l'alignement « intitulé à gauche / pastille à droite ». */
+    .settings-box label.reco-auto {
+      justify-content: flex-start;
+      align-items: flex-start;
+    }
+
+    .reco-auto input {
+      accent-color: var(--neon);
+      width: 15px;
+      height: 15px;
+      margin-top: 1px;
+      flex: none;
+      cursor: pointer;
+    }
+
+    .reco-auto em {
+      display: block;
+      font-style: normal;
+      font-weight: 400;
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .reco-auto-etat {
+      display: none;
+      margin-top: 8px;
+      padding: 7px 10px;
+      border-radius: 10px;
+      font-size: 10px;
+      line-height: 1.5;
+      background: rgba(0, 229, 255, 0.1);
+      border: 1px solid rgba(0, 229, 255, 0.3);
+      color: rgba(255, 255, 255, 0.75);
+    }
+
+    .reco-auto-etat.visible {
+      display: block;
+    }
+
+    .reco-auto-etat b {
+      color: var(--neon);
+    }
+
+    /* Champs pilotés automatiquement : lisibles, mais verrouillés */
+    .settings-box.auto input[type="number"]:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      border-style: dashed;
+      border-color: rgba(0, 229, 255, 0.35);
+    }
+
+    .settings-box .auto-note {
+      display: none;
+      font-size: 10px;
+      color: var(--neon);
+      margin-top: 8px;
+    }
+
+    .settings-box.auto .auto-note {
+      display: block;
+    }
+    /* ── Panneau Quotas : réglages + recommandations fusionnés ─── */
+    .settings-box label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    /* Pastille de valeur recommandée, à droite de chaque intitulé */
+    .reco-chip {
+      flex: none;
+      padding: 2px 9px;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.5;
+      border-radius: 50px;
+      background: rgba(0, 229, 255, 0.14);
+      border: 1px solid rgba(0, 229, 255, 0.45);
+      color: var(--neon);
+      box-shadow: none;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .reco-chip::before {
+      content: "→ ";
+      opacity: 0.7;
+    }
+
+    .reco-chip:hover {
+      transform: none;
+      background: var(--neon);
+      color: #000;
+      box-shadow: 0 0 14px rgba(0, 229, 255, 0.5);
+    }
+
+    /* Valeur déjà en place : plus rien à proposer */
+    .reco-chip.ok,
+    .reco-chip.ok:hover {
+      background: rgba(52, 211, 153, 0.12);
+      border-color: rgba(52, 211, 153, 0.4);
+      color: var(--ok);
+      cursor: default;
+      box-shadow: none;
+    }
+
+    .reco-chip.ok::before {
+      content: "✓ ";
+    }
+
+    .quotas-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .quotas-actions button {
+      flex: 1;
+      padding: 10px 8px;
+      font-size: 11px;
+    }
+
+    /* Réglages qui ne dépendent pas des invités : mis à part */
+    .quotas-autres {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* En pilotage auto, plus rien à recommander à la main ; le bouton
+       « Appliquer » reste, il sert encore au fondu et à la recherche. */
+    .settings-box.auto #recoApply {
+      display: none;
+    }
+    .cooldown {
+      color: #fbbf24;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .quota-full {
+      color: var(--danger);
+    }
+
+    .ready {
+      color: var(--ok);
+    }
+
+    .status-box {
+      background: rgba(0, 229, 255, 0.08);
+      border: 1px solid rgba(0, 229, 255, 0.3);
+      padding: 12px 14px;
+      border-radius: 12px;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+
+    .stat-box {
+      background: rgba(255, 255, 255, 0.05);
+      padding: 12px;
+      border-radius: 14px;
+      text-align: center;
+      border: 1px solid var(--border);
+    }
+
+    .stat-value {
+      font-size: 24px;
+      font-weight: bold;
+      color: var(--neon);
+      text-shadow: 0 0 18px rgba(0, 229, 255, 0.35);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 5px;
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(5, 5, 12, 0.88);
+      backdrop-filter: blur(6px);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal.active {
+      display: flex;
+    }
+
+    .modal-content {
+      background: rgba(20, 20, 40, 0.92);
+      backdrop-filter: blur(18px);
+      border-radius: 22px;
+      padding: 30px;
+      max-width: 500px;
+      border: 1px solid var(--border);
+      box-shadow: 0 0 50px rgba(0, 255, 255, 0.12);
+      animation: fadeIn .35s ease;
+    }
+
+    .modal-header {
+      font-size: 20px;
+      font-weight: bold;
+      margin-bottom: 20px;
+      color: var(--neon);
+    }
+
+    .modal-body {
+      margin-bottom: 20px;
+      font-size: 14px;
+      line-height: 1.6;
+      color: rgba(255, 255, 255, 0.8);
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+    }
+
+    .link {
+      color: var(--neon);
+      text-decoration: none;
+      cursor: pointer;
+      transition: color 0.2s;
+    }
+
+    .link:hover {
+      color: #fff;
+      text-decoration: underline;
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(0, 229, 255, 0.35);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 229, 255, 0.7);
+    }
+
+    /* Une seule colonne : c'est la page entière qui défile, plus les colonnes */
+    @media (max-width: 1200px) {
+      body {
+        overflow: auto;
+        height: auto;
+        min-height: 100vh;
+      }
+
+      .container {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: 100vh;
+      }
+
+      .section,
+      .controls-section {
+        overflow: visible;
+      }
+
+      .playlist {
+        max-height: 60vh;
+      }
+
+      .users-section {
+        min-height: 0;
+      }
+    }
+
+    @media (max-width: 700px) {
+      .container {
+        padding: 12px;
+        gap: 12px;
+      }
+
+      .section {
+        padding: 16px;
+        border-radius: 18px;
+      }
+
+      h2 {
+        font-size: 15px;
+      }
+
+      .control-row {
+        flex-wrap: wrap;
+      }
+
+      .control-row button {
+        min-width: 120px;
+      }
+
+      .stat-value {
+        font-size: 20px;
+      }
+
+      .playlist {
+        max-height: 50vh;
+      }
+
+      /* Titre sur toute la largeur, actions dessous : plus de boutons écrasés */
+      .playlist-item {
+        flex-wrap: wrap;
+      }
+
+      .item-info {
+        flex: 1 1 100%;
+      }
+
+      .item-actions {
+        width: 100%;
+        justify-content: flex-end;
+      }
+
+      .item-actions button {
+        padding: 8px 14px;
+      }
+
+      .modal-content {
+        width: 100%;
+        margin: 20px;
+        padding: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Login Modal -->
+  <div id="loginModal" class="modal active">
+    <div class="modal-content">
+      <div class="modal-header">🔐 Admin Login</div>
+      <div class="modal-body">
+        Entrez le mot de passe administrateur
+      </div>
+      <div class="login-form">
+        <input type="password" id="adminPassword" placeholder="Mot de passe">
+        <button onclick="adminLogin()">Login</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="container" id="adminPanel" style="display: none;">
+    <!-- Gauche: Contrôles -->
+    <div class="section controls-section">
+      <h2>Contrôles</h2>
+      
+      <div class="stats">
+        <div class="stat-box">
+          <div class="stat-value" id="playlistSize">0</div>
+          <div class="stat-label">Pistes en queue</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="currentTrackIdx">0</div>
+          <div class="stat-label">Piste actuelle</div>
+        </div>
+      </div>
+
+      <div class="control-row">
+        <button id="playPauseBtn" onclick="togglePlayback()">▶ Lecture</button>
+      </div>
+
+      <div class="control-row">
+        <button onclick="controlPlayback('prev')">⏮ Précédent</button>
+        <button onclick="controlPlayback('next')">⏭ Suivant</button>
+      </div>
+
+      <div class="btn-group">
+        <button class="danger" onclick="clearPlaylist()">🗑 Vider Playlist</button>
+      </div>
+
+      <!-- Quotas : réglages, recommandations calculées sur les invités
+           et leurs ajouts, et pilotage automatique — un seul panneau. -->
+      <div class="status-box settings-box" id="quotasBox">
+        <div class="reco-head">
+          <strong>Quotas</strong>
+          <span class="reco-base" id="recoBase">—</span>
+        </div>
+
+        <div class="reco-modes" id="recoModes">
+          <button type="button" class="reco-mode" data-cible="20">Courte<span>~20 min</span></button>
+          <button type="button" class="reco-mode active" data-cible="45">Équilibrée<span>~45 min</span></button>
+          <button type="button" class="reco-mode" data-cible="90">Longue<span>~1 h 30</span></button>
+        </div>
+
+        <label for="setMaxSongs">Chansons max par utilisateur
+          <button type="button" class="reco-chip" data-champ="setMaxSongs" title="Appliquer la valeur recommandée">–</button>
+        </label>
+        <input type="number" id="setMaxSongs" min="0" max="100" step="1">
+
+        <label for="setCooldown">Délai entre deux ajouts (minutes)
+          <button type="button" class="reco-chip" data-champ="setCooldown" title="Appliquer la valeur recommandée">–</button>
+        </label>
+        <input type="number" id="setCooldown" min="0" max="1440" step="0.5">
+
+        <label for="setWindow">Fenêtre du quota (minutes, 0 = définitif)
+          <button type="button" class="reco-chip" data-champ="setWindow" title="Appliquer la valeur recommandée">–</button>
+        </label>
+        <input type="number" id="setWindow" min="0" max="10080" step="5">
+
+        <div class="reco-constats" id="recoConstats"></div>
+
+        <div class="quotas-actions">
+          <button class="secondary" id="recoApply" onclick="preremplirRecommandations()">Tout recommander</button>
+          <button onclick="saveSettings()">Appliquer</button>
+        </div>
+        <div id="settingsMsg" style="margin-top: 8px; font-size: 11px;"></div>
+
+        <label class="reco-auto">
+          <input type="checkbox" id="recoAuto">
+          <span>Quotas dynamiques<em>ajustés tout seuls, en continu</em></span>
+        </label>
+        <div class="reco-auto-etat" id="recoAutoEtat"></div>
+        <div class="auto-note">⚡ Quotas pilotés automatiquement — décochez pour reprendre la main.</div>
+
+        <div class="quotas-autres">
+          <label for="setFade">Fondu entre les chansons (secondes, 0 = sec)</label>
+          <input type="number" id="setFade" min="0" max="15" step="0.5">
+
+          <label for="setSoulseekSearch">Délai de recherche Soulseek (secondes)</label>
+          <input type="number" id="setSoulseekSearch" min="5" max="120" step="1">
+        </div>
+      </div>
+
+      <div class="status-box">
+        <div><strong>Infos Serveur</strong></div>
+        <div id="serverStatus" style="margin-top: 8px; font-size: 11px;">
+          Chargement...
+        </div>
+      </div>
+
+      <div style="margin-top: auto;">
+        <button class="secondary" onclick="logout()" style="width: 100%;">Logout</button>
+      </div>
+    </div>
+
+    <!-- Centre: Recherche + Playlist -->
+    <div class="section playlist-section">
+      <h2>
+        Ajouter une chanson
+        <span style="font-size: 11px; font-weight: normal; color: rgba(255,255,255,0.55);">sans limite</span>
+      </h2>
+
+      <!-- L'admin ajoute autant de titres qu'il veut : ni code, ni quota, ni délai -->
+      <div class="admin-search">
+        <div class="search-row">
+          <input type="text" id="adminSearchInput" maxlength="120" autocomplete="off"
+                 spellcheck="false" placeholder="Titre, artiste, album…">
+          <button id="adminSearchBtn" onclick="adminSearch()">Chercher</button>
+        </div>
+
+        <div id="adminSearchProgress" style="display: none;">
+          <div class="search-progress-head">
+            <span id="adminSearchLabel">Recherche en cours…</span>
+            <span class="search-progress-time" id="adminSearchTime"></span>
+          </div>
+          <div class="search-progress-track">
+            <div class="search-progress-bar" id="adminSearchBar"></div>
+          </div>
+        </div>
+
+        <div id="adminSearchMessage" style="display: none;"></div>
+        <div id="adminSearchResults" class="search-results" style="display: none;"></div>
+      </div>
+
+      <h2 style="margin-top: 5px;">
+        Playlist en cours
+        <span id="playlistCount">0</span>
+      </h2>
+      <div class="playlist" id="playlist"></div>
+    </div>
+
+    <!-- Droite: Utilisateurs autorises -->
+    <div class="section users-section">
+      <h2>
+        Utilisateurs autorisés
+        <span id="userCount">0</span>
+      </h2>
+
+      <div class="status-box" style="margin-bottom: 15px;">
+        Chaque personne reçoit un <strong>code</strong>, qu'elle saisit seule sur la
+        page <strong>/guest</strong> : c'est lui qui l'identifie, il n'y a pas de nom
+        à taper. Laissez le champ vide pour qu'un code soit tiré au sort.
+      </div>
+
+      <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+        <input type="text" id="newUserName" maxlength="40" placeholder="Nom de l'utilisateur"
+               style="flex: 1; min-width: 0; padding: 10px 15px; border-radius: 8px; font-size: 12px;
+                      background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff;">
+      </div>
+
+      <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+        <input type="text" id="newUserCode" class="code-field" maxlength="40"
+               placeholder="Code (vide = tiré au sort)" autocomplete="off" spellcheck="false"
+               style="flex: 1; min-width: 0; padding: 10px 15px; border-radius: 8px; font-size: 12px;
+                      background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff;">
+        <button onclick="addUser()">+ Ajouter</button>
+      </div>
+
+      <div id="userError" style="display: none; font-size: 11px; color: #ff5c7a; margin-bottom: 10px;"></div>
+
+      <div class="playlist" id="usersList" style="flex: 1;"></div>
+
+      <div class="status-box" style="margin-top: 15px;">
+        <strong>Lien pour les invités</strong>
+        <div id="guestLink" style="margin-top: 8px; font-size: 11px; word-break: break-all;">-</div>
+        <button class="secondary" id="copyLinkBtn" onclick="copyGuestLink()"
+                style="width: 100%; margin-top: 10px;">📋 Copier le lien</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '/api';
+    let adminToken = localStorage.getItem('adminToken');
+    let timers = [];
+    let userCount = 0;
+    let settingsDirty = false;   // ne pas ecraser une saisie en cours
+    let dernierePlaylist = null;      // dernier état connu de la file
+    let derniersUtilisateurs = null;  // dernière liste d'invités connue
+
+    function escapeHtml(str) {
+      return String(str == null ? '' : str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function authHeaders(extra) {
+      return Object.assign({ 'Authorization': 'Bearer ' + adminToken }, extra || {});
+    }
+
+    async function adminFetch(url, options) {
+      options = options || {};
+      options.headers = authHeaders(options.headers);
+      const res = await fetch(url, options);
+      if (res.status === 401) {
+        handleUnauthorized();
+        throw new Error('unauthorized');
+      }
+      return res;
+    }
+
+    function handleUnauthorized() {
+      localStorage.removeItem('adminToken');
+      adminToken = null;
+      stopTimers();
+      cancelSearch(null);
+      document.getElementById('adminPanel').style.display = 'none';
+      document.getElementById('loginModal').classList.add('active');
+    }
+
+    function stopTimers() {
+      timers.forEach(t => clearInterval(t));
+      timers = [];
+    }
+
+    function startSession() {
+      document.getElementById('loginModal').classList.remove('active');
+      document.getElementById('adminPanel').style.display = 'grid';
+      refreshGuestLink();
+      loadPlaylist();
+      loadUsers();
+      loadSettings();
+      updateServerStatus();
+      stopTimers();
+      timers.push(setInterval(loadPlaylist, 2000));
+      timers.push(setInterval(loadUsers, 5000));
+      timers.push(setInterval(updateServerStatus, 10000));
+      timers.push(setInterval(tickCooldowns, 1000));
+      timers.push(setInterval(verifierAutoQuotas, 15000));
+    }
+
+    async function adminLogin() {
+      const password = document.getElementById('adminPassword').value;
+      if (!password) {
+        alert('Entrez un mot de passe');
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}/admin/auth`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          adminToken = data.token;
+          localStorage.setItem('adminToken', adminToken);
+          document.getElementById('adminPassword').value = '';
+          startSession();
+        } else {
+          alert('Mot de passe incorrect');
+        }
+      } catch (error) {
+        console.error('Login error:', error);
+        alert('Erreur lors de la connexion');
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem('adminToken');
+      location.reload();
+    }
+
+    // ============= PLAYLIST =============
+    // Vrai pendant un glisser-déposer : le rafraîchissement automatique
+    // (toutes les 2 s) réécrit toute la liste et arracherait la piste
+    // en cours de déplacement sous le curseur.
+    let reorganisationEnCours = false;
+
+    async function loadPlaylist() {
+      if (reorganisationEnCours) return;
+      try {
+        const response = await fetch(`${API_BASE}/playlist`);
+        const data = await response.json();
+
+        dernierePlaylist = data;
+        afficherRecommandations();
+
+        document.getElementById('playlistCount').textContent = data.playlist.length;
+        document.getElementById('playlistSize').textContent = data.playlist.length;
+        document.getElementById('currentTrackIdx').textContent = `${data.playlist.length ? data.currentIndex + 1 : 0}/${data.playlist.length}`;
+
+        // Le bouton montre ce qu'il va faire, pas ce qui se passe
+        const playPause = document.getElementById('playPauseBtn');
+        playPause.textContent = data.isPlaying ? '⏸ Pause' : '▶ Lecture';
+        playPause.dataset.playing = data.isPlaying ? '1' : '0';
+        playPause.disabled = data.playlist.length === 0;
+
+        const playlistEl = document.getElementById('playlist');
+        if (data.playlist.length === 0) {
+          playlistEl.innerHTML = '<div style="text-align: center; color: rgba(255,255,255,0.38); padding: 20px;">Playlist vide</div>';
+          return;
+        }
+
+        playlistEl.innerHTML = data.playlist.map((track, idx) => `
+          <div class="playlist-item ${idx === data.currentIndex ? 'current' : ''}" data-index="${idx}">
+            <div class="drag-handle" title="Glisser pour réordonner">⠿</div>
+            <div class="item-info">
+              <div class="item-title">${idx + 1}. ${escapeHtml(track.title)}</div>
+              <div class="item-meta">${escapeHtml(track.artist)} • ${formatTime(track.duration)} • Ajouté par: ${escapeHtml(track.addedBy || 'Admin')}${downloadLabel(track)}</div>
+            </div>
+            <div class="item-actions">
+              <button title="Lire cette piste" ${idx === data.currentIndex ? 'disabled' : ''}
+                      onclick="controlPlayback('goto', ${idx})">▶</button>
+              <button class="danger" title="Retirer" onclick="removeTrack(${idx})">×</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (error) {
+        console.error('Error loading playlist:', error);
+      }
+    }
+
+    function togglePlayback() {
+      const bouton = document.getElementById('playPauseBtn');
+      const enLecture = bouton.dataset.playing === '1';
+
+      // Reponse immediate : le serveur confirmera au prochain rafraichissement
+      bouton.textContent = enLecture ? '▶ Lecture' : '⏸ Pause';
+      bouton.dataset.playing = enLecture ? '0' : '1';
+
+      controlPlayback(enLecture ? 'pause' : 'play');
+    }
+
+    // Seule cette page pilote la lecture : l'ecran /player ne fait qu'obeir.
+    async function controlPlayback(action, trackIndex) {
+      try {
+        await adminFetch(`${API_BASE}/admin/playback`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, trackIndex })
+        });
+        loadPlaylist();
+      } catch (error) {
+        console.error('Playback control error:', error);
+      }
+    }
+
+    // Déplace une piste dans la file. Le serveur recale l'index courant
+    // pour que le morceau en cours reste le morceau en cours.
+    async function moveTrack(from, to) {
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/playlist/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from, to })
+        });
+        if (response.ok) loadPlaylist();
+      } catch (error) {
+        if (error.message !== 'unauthorized') console.error('Erreur de déplacement:', error);
+      }
+    }
+
+    async function removeTrack(index) {
+      if (!confirm('Retirer cette chanson de la playlist?')) return;
+
+      try {
+        await adminFetch(`${API_BASE}/admin/playlist/${index}`, { method: 'DELETE' });
+        loadPlaylist();
+      } catch (error) {
+        console.error('Error removing track:', error);
+      }
+    }
+
+    async function clearPlaylist() {
+      if (!confirm('Vider la playlist et remettre à zéro les quotas des utilisateurs?')) return;
+
+      try {
+        await adminFetch(`${API_BASE}/admin/playlist/clear`, { method: 'POST' });
+        loadPlaylist();
+        loadUsers();
+      } catch (error) {
+        console.error('Error clearing playlist:', error);
+      }
+    }
+
+    // ============= UTILISATEURS =============
+    function showUserError(message) {
+      const el = document.getElementById('userError');
+      el.style.color = '#ff5c7a';
+      if (!message) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+      }
+      el.style.display = 'block';
+      el.textContent = message;
+    }
+
+    // Même emplacement, mais pour une bonne nouvelle : le code à transmettre
+    function showUserMessage(message) {
+      const el = document.getElementById('userError');
+      el.style.display = 'block';
+      el.style.color = '#34d399';
+      el.textContent = message;
+      setTimeout(() => {
+        if (el.textContent === message) showUserError('');
+      }, 15000);
+    }
+
+    async function loadUsers() {
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/users`);
+        const data = await response.json();
+        const users = data.users || [];
+
+        derniersUtilisateurs = users;
+        afficherRecommandations();
+
+        userCount = users.length;
+        document.getElementById('userCount').textContent = users.length;
+
+        const listEl = document.getElementById('usersList');
+        if (users.length === 0) {
+          listEl.innerHTML = '<div style="text-align: center; color: rgba(255,255,255,0.38); padding: 20px; font-size: 12px;">Aucun utilisateur autorisé.<br>Personne ne peut ajouter de musique.</div>';
+          return;
+        }
+
+        listEl.innerHTML = users.map(user => `
+          <div class="playlist-item">
+            <div class="item-info">
+              <div class="item-title">${escapeHtml(user.name)}</div>
+              <div class="item-meta">${user.addedSongs}/${user.maxSongs} chansons • ${statusCell(user)}</div>
+              <div class="item-code" title="Code de connexion — cliquez pour le copier"
+                   onclick="copyCode('${escapeHtml(user.password).replace(/'/g, '&#39;')}', this)">
+                🔑 ${escapeHtml(user.password)}
+              </div>
+            </div>
+            <div class="item-actions">
+              <button class="secondary" title="Nouveau code d'accès" onclick="newPassword('${user.id}', '${escapeHtml(user.name).replace(/'/g, '&#39;')}')">🔑</button>
+              <button class="secondary" title="Réinitialiser son quota" onclick="resetUser('${user.id}')">↺</button>
+              <button class="secondary" title="Renommer" onclick="renameUser('${user.id}', '${escapeHtml(user.name).replace(/'/g, '&#39;')}')">✎</button>
+              <button class="danger" title="Retirer de la liste" onclick="deleteUser('${user.id}', '${escapeHtml(user.name).replace(/'/g, '&#39;')}')">×</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (error) {
+        if (error.message !== 'unauthorized') console.error('Error loading users:', error);
+      }
+    }
+
+    function formatClock(totalSeconds) {
+      const s = Math.max(0, Math.ceil(totalSeconds));
+      const m = Math.floor(s / 60);
+      return `${m}:${(s % 60).toString().padStart(2, '0')}`;
+    }
+
+    // Cellule de statut : echeance locale pour que le decompte tourne entre deux rafraichissements
+    function statusCell(user) {
+      if (user.canAdd.allowed) {
+        return '<span class="ready">prêt</span>';
+      }
+      if (user.waitSeconds > 0) {
+        const deadline = Date.now() + user.waitSeconds * 1000;
+        const cls = user.canAdd.limit === 'quota' ? 'quota-full' : 'cooldown';
+        const title = user.canAdd.limit === 'quota' ? 'Place libre dans' : 'Prochain ajout dans';
+        return `<span class="${cls}" title="${title}" data-deadline="${deadline}">${formatClock(user.waitSeconds)}</span>`;
+      }
+      return '<span class="quota-full">quota atteint</span>';
+    }
+
+    function tickCooldowns() {
+      document.querySelectorAll('#usersList [data-deadline]').forEach(el => {
+        const remaining = (Number(el.dataset.deadline) - Date.now()) / 1000;
+        if (remaining <= 0) {
+          el.className = 'ready';
+          el.textContent = 'prêt';
+          el.removeAttribute('data-deadline');
+        } else {
+          el.textContent = formatClock(remaining);
+        }
+      });
+    }
+
+    // ============= QUOTAS GENERAUX =============
+    async function loadSettings() {
+      if (settingsDirty) return;
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/settings`);
+        const data = await response.json();
+        document.getElementById('setMaxSongs').value = data.maxSongsPerUser;
+        document.getElementById('setCooldown').value = data.cooldownMinutes;
+        document.getElementById('setWindow').value = data.quotaWindowMinutes;
+        document.getElementById('setFade').value = data.fadeSeconds;
+        document.getElementById('setSoulseekSearch').value = data.soulseekSearchSeconds;
+        afficherRecommandations();   // les pastilles se comparent aux valeurs fraîches
+      } catch (error) {
+        if (error.message !== 'unauthorized') console.error('Settings load error:', error);
+      }
+    }
+
+    async function saveSettings() {
+      const msgEl = document.getElementById('settingsMsg');
+      const maxSongsPerUser = Number(document.getElementById('setMaxSongs').value);
+      const cooldownMinutes = Number(document.getElementById('setCooldown').value);
+      const quotaWindowMinutes = Number(document.getElementById('setWindow').value);
+      const fadeSeconds = Number(document.getElementById('setFade').value);
+      const soulseekSearchSeconds = Number(document.getElementById('setSoulseekSearch').value);
+
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/settings`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ maxSongsPerUser, cooldownMinutes, quotaWindowMinutes, fadeSeconds, soulseekSearchSeconds })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          msgEl.style.color = '#ff5c7a';
+          msgEl.textContent = data.error || 'Erreur';
+          return;
+        }
+
+        settingsDirty = false;
+        msgEl.style.color = '#34d399';
+        const fondu = data.fadeSeconds > 0 ? `, fondu ${data.fadeSeconds} s` : ', sans fondu';
+        const recherche = `, recherche Soulseek ${data.soulseekSearchSeconds} s`;
+        msgEl.textContent = (data.quotaWindowMinutes > 0
+          ? `✓ ${data.maxSongsPerUser} chansons / ${data.quotaWindowMinutes} min, délai ${data.cooldownMinutes} min`
+          : `✓ ${data.maxSongsPerUser} chansons (quota définitif), délai ${data.cooldownMinutes} min`) + fondu + recherche;
+        setTimeout(() => { msgEl.textContent = ''; }, 4000);
+
+        loadUsers();
+        updateServerStatus();
+      } catch (error) {
+        if (error.message !== 'unauthorized') {
+          msgEl.style.color = '#ff5c7a';
+          msgEl.textContent = 'Erreur lors de l\'enregistrement';
+        }
+      }
+    }
+
+    async function addUser() {
+      const input = document.getElementById('newUserName');
+      const codeInput = document.getElementById('newUserCode');
+      const name = input.value.trim();
+      const password = codeInput.value.trim();
+      if (!name) {
+        showUserError('Entrez un nom');
+        return;
+      }
+
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/users`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, password })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          input.value = '';
+          codeInput.value = '';
+          showUserError('');
+          loadUsers();
+          if (data.user) {
+            showUserMessage(`Code de ${data.user.name} : ${data.user.password}`);
+          }
+        } else {
+          const err = await response.json();
+          showUserError(err.error || 'Erreur');
+        }
+      } catch (error) {
+        if (error.message !== 'unauthorized') showUserError("Erreur lors de l'ajout");
+      }
+    }
+
+    async function renameUser(id, currentName) {
+      const name = prompt('Nouveau nom :', currentName);
+      if (name === null) return;
+
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/users/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        if (!response.ok) {
+          const err = await response.json();
+          showUserError(err.error || 'Erreur');
+        } else {
+          showUserError('');
+        }
+        loadUsers();
+      } catch (error) {
+        if (error.message !== 'unauthorized') console.error(error);
+      }
+    }
+
+    async function deleteUser(id, name) {
+      if (!confirm(`Retirer "${name}" de la liste ? Cette personne ne pourra plus ajouter de musique.`)) return;
+
+      try {
+        await adminFetch(`${API_BASE}/admin/users/${id}`, { method: 'DELETE' });
+        loadUsers();
+      } catch (error) {
+        if (error.message !== 'unauthorized') console.error(error);
+      }
+    }
+
+    // Nouveau code : tiré au sort, ou saisi par l'organisateur
+    async function newPassword(id, name) {
+      const saisie = prompt(
+        `Nouveau code pour "${name}" :\n(laisser vide pour un code tiré au sort)`, '');
+      if (saisie === null) return;
+
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/users/${id}/password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: saisie.trim() })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          showUserError(data.error || 'Erreur');
+          return;
+        }
+
+        showUserMessage(`Nouveau code de ${data.user.name} : ${data.user.password}`);
+        loadUsers();
+      } catch (error) {
+        if (error.message !== 'unauthorized') showUserError('Erreur lors du changement de code');
+      }
+    }
+
+    // Copie d'un code : même méthode de secours que pour le lien invité
+    async function copyCode(code, element) {
+      let copie = false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(code);
+          copie = true;
+        }
+      } catch (error) {
+        copie = false;
+      }
+
+      if (!copie) {
+        const zone = document.createElement('textarea');
+        zone.value = code;
+        zone.style.position = 'fixed';
+        zone.style.opacity = '0';
+        document.body.appendChild(zone);
+        zone.select();
+        try { copie = document.execCommand('copy'); } catch (error) { copie = false; }
+        document.body.removeChild(zone);
+      }
+
+      if (copie && element) {
+        const contenu = element.innerHTML;
+        element.innerHTML = '✓ copié';
+        setTimeout(() => { element.innerHTML = contenu; }, 1500);
+      }
+    }
+
+    async function resetUser(id) {
+      try {
+        await adminFetch(`${API_BASE}/admin/users/${id}/reset`, { method: 'POST' });
+        loadUsers();
+      } catch (error) {
+        if (error.message !== 'unauthorized') console.error(error);
+      }
+    }
+
+    // Le serveur connait son adresse sur le reseau local : c'est celle-la
+    // qu'il faut donner aux invites, pas « localhost ».
+    let guestLinkUrl = location.origin + '/guest';
+
+    async function refreshGuestLink() {
+      try {
+        const config = await (await fetch(`${API_BASE}/config`)).json();
+        if (config && config.guestUrl) guestLinkUrl = config.guestUrl;
+      } catch (error) {
+        console.warn('Adresse invité indisponible, on garde celle du navigateur');
+      }
+      document.getElementById('guestLink').textContent = guestLinkUrl;
+    }
+
+    // navigator.clipboard n'existe qu'en HTTPS (ou sur localhost) : sur un
+    // reseau local en http://, il faut la methode de secours.
+    async function copyGuestLink() {
+      const bouton = document.getElementById('copyLinkBtn');
+      const texte = guestLinkUrl;
+      let copie = false;
+
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(texte);
+          copie = true;
+        }
+      } catch (error) {
+        copie = false;
+      }
+
+      if (!copie) {
+        const zone = document.createElement('textarea');
+        zone.value = texte;
+        zone.setAttribute('readonly', '');
+        zone.style.position = 'fixed';
+        zone.style.opacity = '0';
+        document.body.appendChild(zone);
+        zone.select();
+        zone.setSelectionRange(0, texte.length);
+        try { copie = document.execCommand('copy'); } catch (error) { copie = false; }
+        document.body.removeChild(zone);
+      }
+
+      if (!bouton) return;
+      const etiquette = bouton.textContent;
+      bouton.textContent = copie ? '✓ Lien copié' : '⚠ Copie impossible — sélectionnez le lien';
+      setTimeout(() => { bouton.textContent = etiquette; }, 2500);
+    }
+
+    // ============= RECHERCHE ET AJOUT (ADMIN) =============
+    // L'admin n'est lié à aucun utilisateur : ni code, ni quota, ni délai
+    // entre deux ajouts. Il peut donc enchaîner autant de titres qu'il veut.
+
+    let searchController = null;
+    let searchSeq = 0;              // neutralise la réponse d'une recherche dépassée
+    let searchProgressTimer = null;
+    let searchMaxMs = 20000;        // budget annoncé par /api/config
+    let searchResults = [];
+
+    function setSearchButtonMode(searching) {
+      const btn = document.getElementById('adminSearchBtn');
+      btn.textContent = searching ? 'Annuler' : 'Chercher';
+      btn.classList.toggle('cancel', !!searching);
+    }
+
+    function showSearchMessage(text, kind) {
+      const box = document.getElementById('adminSearchMessage');
+      if (!text) {
+        box.style.display = 'none';
+        box.innerHTML = '';
+        return;
+      }
+      box.className = 'search-message' + (kind ? ' ' + kind : '');
+      box.innerHTML = text;
+      box.style.display = 'block';
+    }
+
+    function startSearchProgress() {
+      const box = document.getElementById('adminSearchProgress');
+      const bar = document.getElementById('adminSearchBar');
+      const time = document.getElementById('adminSearchTime');
+      const label = document.getElementById('adminSearchLabel');
+      const startedAt = Date.now();
+
+      clearInterval(searchProgressTimer);
+      box.style.display = 'block';
+      bar.classList.remove('overtime');
+      bar.style.width = '0%';
+
+      const tick = () => {
+        const elapsed = Date.now() - startedAt;
+        const ratio = Math.min(1, elapsed / searchMaxMs);
+        bar.style.width = (ratio * 100).toFixed(1) + '%';
+
+        if (ratio < 1) {
+          label.textContent = 'Recherche en cours…';
+          time.textContent = Math.max(0, Math.ceil((searchMaxMs - elapsed) / 1000)) + ' s';
+        } else {
+          // Au-dela du budget prevu : on garde la barre pleine et animee
+          bar.classList.add('overtime');
+          label.textContent = 'Encore un instant…';
+          time.textContent = '';
+        }
+      };
+
+      tick();
+      searchProgressTimer = setInterval(tick, 100);
+    }
+
+    function stopSearchProgress() {
+      clearInterval(searchProgressTimer);
+      searchProgressTimer = null;
+      document.getElementById('adminSearchProgress').style.display = 'none';
+    }
+
+    // Interrompt la requete en cours (searchSeq neutralise sa reponse)
+    function cancelSearch(message) {
+      if (searchController) {
+        searchSeq++;
+        searchController.abort();
+        searchController = null;
+      }
+      stopSearchProgress();
+      setSearchButtonMode(false);
+      if (message) showSearchMessage(escapeHtml(message), null);
+    }
+
+    function clearSearchResults() {
+      cancelSearch(null);
+      searchResults = [];
+      const box = document.getElementById('adminSearchResults');
+      box.innerHTML = '';
+      box.style.display = 'none';
+      showSearchMessage(null);
+      document.getElementById('adminSearchInput').value = '';
+    }
+
+    async function adminSearch(relaunch) {
+      // Un nouveau clic pendant une recherche l'annule
+      if (searchController) {
+        cancelSearch(relaunch ? null : 'Recherche annulée');
+        if (!relaunch) return;
+      }
+
+      const query = document.getElementById('adminSearchInput').value.trim();
+      if (query.length < 2) {
+        showSearchMessage('Entrez au moins 2 caractères', 'error');
+        return;
+      }
+
+      const resultsEl = document.getElementById('adminSearchResults');
+      resultsEl.innerHTML = '';
+      resultsEl.style.display = 'none';
+      showSearchMessage(null);
+
+      const mySeq = ++searchSeq;
+      const controller = new AbortController();
+      searchController = controller;
+      setSearchButtonMode(true);
+      startSearchProgress();
+
+      try {
+        const response = await adminFetch(
+          `${API_BASE}/admin/search?q=${encodeURIComponent(query)}`,
+          { signal: controller.signal }
+        );
+
+        // Une recherche plus recente (ou une annulation) a pris le relais
+        if (mySeq !== searchSeq) return;
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          showSearchMessage(escapeHtml(data.error || 'Erreur de recherche'), 'error');
+          return;
+        }
+
+        if (data.results.length === 0) {
+          showSearchMessage('Aucun résultat pour « ' + escapeHtml(query) + ' »', null);
+          return;
+        }
+
+        searchResults = data.results;
+        renderSearchResults();
+      } catch (error) {
+        if (error.name === 'AbortError' || mySeq !== searchSeq) return;
+        if (error.message === 'unauthorized') return;
+        console.error('Erreur de recherche:', error);
+        showSearchMessage('Erreur lors de la recherche', 'error');
+      } finally {
+        if (mySeq === searchSeq) {
+          searchController = null;
+          setSearchButtonMode(false);
+          stopSearchProgress();
+        }
+      }
+    }
+
+    function sourceLabel(song) {
+      if (song.source !== 'soulseek') return '🎵 Navidrome';
+      return '🎧 Soulseek'
+        + (song.format ? ' • ' + escapeHtml(song.format.toUpperCase()) : '')
+        + (song.bitrate ? ' • ' + song.bitrate + ' kbps' : '')
+        + (song.freeSlot === false ? ' • ⏳ file d\'attente' : '');
+    }
+
+    function renderSearchResults() {
+      const resultsEl = document.getElementById('adminSearchResults');
+
+      resultsEl.innerHTML = `
+        <div class="results-head">
+          <span>${searchResults.length} résultat${searchResults.length > 1 ? 's' : ''}</span>
+          <button class="secondary" onclick="clearSearchResults()">Effacer</button>
+        </div>
+      ` + searchResults.map((song, idx) => `
+        <div class="playlist-item">
+          <div class="item-info">
+            <div class="item-title">${escapeHtml(song.title)}</div>
+            <div class="item-meta">${escapeHtml(song.artist || '')}${
+              song.duration ? ' • ' + formatTime(song.duration) : ''} • ${sourceLabel(song)}</div>
+          </div>
+          <div class="item-actions">
+            ${song.inPlaylist
+              ? `<button class="duplicate" disabled>${
+                  song.alreadyPlayed ? '✓ Déjà passée' : '✓ Déjà dans la liste'}</button>`
+              : `<button onclick="addSongToPlaylist(${idx}, this)">+ Ajouter</button>`}
+          </div>
+        </div>
+      `).join('');
+
+      resultsEl.style.display = 'flex';
+    }
+
+    // Etat du bouton d'un resultat : en cours, ajoute (vert), ou de nouveau libre
+    function setAddButtonState(btn, state) {
+      if (!btn) return;
+
+      btn.classList.remove('added', 'duplicate');
+      if (state === 'pending') {
+        btn.disabled = true;
+        btn.textContent = 'Ajout…';
+      } else if (state === 'added') {
+        btn.disabled = true;
+        btn.classList.add('added');
+        btn.textContent = '✓ Ajouté';
+      } else if (state === 'duplicate') {
+        btn.disabled = true;
+        btn.classList.add('duplicate');
+        btn.textContent = '✓ Déjà dans la liste';
+      } else {
+        btn.disabled = false;
+        btn.textContent = '+ Ajouter';
+      }
+    }
+
+    async function addSongToPlaylist(index, btn) {
+      const song = searchResults[index];
+      if (!song) return;
+      if (btn && btn.disabled) return;   // deja ajoute ou envoi en cours
+
+      setAddButtonState(btn, 'pending');
+
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/playlist/add`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ song })
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok) {
+          // Le resultat reste affiche : la liste est prete pour l'ajout suivant
+          song.inPlaylist = true;
+          setAddButtonState(btn, 'added');
+          showSearchMessage('✓ « ' + escapeHtml(song.title) + ' » ajoutée à la playlist',
+                            'success');
+          loadPlaylist();
+        } else if (response.status === 409) {
+          song.inPlaylist = true;
+          setAddButtonState(btn, 'duplicate');
+          showSearchMessage('⚠ ' + escapeHtml(data.error || 'Chanson déjà dans la playlist'),
+                            'error');
+        } else {
+          setAddButtonState(btn, 'idle');
+          showSearchMessage('⚠ ' + escapeHtml(data.error || "Erreur lors de l'ajout"), 'error');
+        }
+      } catch (error) {
+        if (error.message === 'unauthorized') return;
+        setAddButtonState(btn, 'idle');
+        console.error("Erreur d'ajout:", error);
+        showSearchMessage("Erreur lors de l'ajout", 'error');
+      }
+    }
+
+    // ============= DIVERS =============
+    async function updateServerStatus() {
+      try {
+        loadSettings();
+        const response = await fetch(`${API_BASE}/config`);
+        const config = await response.json();
+
+        // Budget d'une recherche : sert a graduer la barre de progression
+        if (config.searchMaxMs) searchMaxMs = config.searchMaxMs;
+
+        document.getElementById('serverStatus').innerHTML = `
+          Max chansons/user: ${config.maxSongsPerUser}<br>
+          Cooldown: ${config.cooldownMinutes}min<br>
+          Fenêtre quota: ${config.quotaWindowMinutes > 0 ? config.quotaWindowMinutes + 'min' : 'définitif'}<br>
+
+          Utilisateurs autorisés: ${userCount}<br>
+          Navidrome: ${config.sources.navidrome ? '✓' : '✗'}<br>
+          Soulseek: ${config.sources.soulseek ? '✓' : '✗ (sockseek introuvable)'}
+        `;
+      } catch (error) {
+        console.error('Status update error:', error);
+      }
+    }
+
+    // Etat du fichier temporaire pour les pistes Soulseek
+    function downloadLabel(track) {
+      if (track.source !== 'soulseek') return '';
+      const labels = {
+        pending: ' • <span class="cooldown">en attente</span>',
+        downloading: ' • <span class="cooldown">téléchargement...</span>',
+        ready: ' • <span class="ready">prêt</span>',
+        deleted: ' • <span style="color:rgba(255,255,255,0.45)">supprimé après lecture</span>',
+        failed: ' • <span class="quota-full">échec</span>',
+        absent: ''
+      };
+      return labels[track.downloadStatus] || '';
+    }
+
+    function formatTime(seconds) {
+      if (!seconds) return '0:00';
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60);
+      return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    // Initial check
+    if (adminToken) {
+      startSession();
+    }
+
+    document.getElementById('adminPassword').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') adminLogin();
+    });
+
+    document.getElementById('newUserName').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') addUser();
+    });
+
+    // Entrée relance la recherche plutot que de l'annuler
+    document.getElementById('adminSearchInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') adminSearch(true);
+    });
+
+    ['setMaxSongs', 'setCooldown', 'setWindow', 'setFade', 'setSoulseekSearch'].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('input', () => { settingsDirty = true; });
+      el.addEventListener('keypress', (e) => { if (e.key === 'Enter') saveSettings(); });
+    });
+
+    /* ── GLISSER-DÉPOSER DANS LA PLAYLIST ─────────────────────────────
+       Réutilise l'endpoint /admin/playlist/move : on ne fait que
+       calculer le couple (from, to) une fois la piste lâchée.
+       Pointer Events plutôt que l'API drag-and-drop HTML5 : la même
+       implémentation couvre souris, tactile et stylet.
+       Les flèches ▲▼ restent disponibles et font exactement pareil.
+       ──────────────────────────────────────────────────────────────── */
+    (function () {
+      const liste = document.getElementById('playlist');
+      if (!liste) return;
+
+      const SEUIL = 6;          // px de mouvement avant de considérer un glissé
+      let glisse = null;
+
+      function lignes() {
+        return Array.prototype.slice.call(liste.querySelectorAll('.playlist-item'));
+      }
+
+      liste.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        const ligne = event.target.closest('.playlist-item');
+        if (!ligne || !liste.contains(ligne)) return;
+        if (event.target.closest('button')) return;
+        // Au doigt, seule la poignée démarre un glissé : ailleurs, la
+        // liste doit continuer à défiler normalement.
+        if (event.pointerType !== 'mouse' && !event.target.closest('.drag-handle')) return;
+
+        glisse = {
+          ligne,
+          depart: parseInt(ligne.dataset.index, 10),
+          yDepart: event.clientY,
+          actif: false
+        };
+      });
+
+      window.addEventListener('pointermove', (event) => {
+        if (!glisse) return;
+
+        if (!glisse.actif) {
+          if (Math.abs(event.clientY - glisse.yDepart) < SEUIL) return;
+          glisse.actif = true;
+          reorganisationEnCours = true;
+          glisse.ligne.classList.add('dragging');
+          document.body.style.userSelect = 'none';
+        }
+        event.preventDefault();
+
+        // On déplace réellement la ligne dans le DOM dès qu'elle franchit
+        // le milieu d'une voisine : la liste se réorganise sous le curseur.
+        const y = event.clientY;
+        for (const autre of lignes()) {
+          if (autre === glisse.ligne) continue;
+          const rect = autre.getBoundingClientRect();
+          const milieu = rect.top + rect.height / 2;
+          const apres = autre.compareDocumentPosition(glisse.ligne) & Node.DOCUMENT_POSITION_FOLLOWING;
+          if (y < milieu && apres) {
+            liste.insertBefore(glisse.ligne, autre);
+            renumeroter();
+            break;
+          }
+          if (y > milieu && !apres) {
+            liste.insertBefore(glisse.ligne, autre.nextSibling);
+            renumeroter();
+            break;
+          }
+        }
+      }, { passive: false });
+
+      // Le numéro affiché suit le déplacement, sans attendre le serveur
+      function renumeroter() {
+        lignes().forEach((ligne, i) => {
+          const titre = ligne.querySelector('.item-title');
+          if (titre) titre.textContent = titre.textContent.replace(/^\d+\.\s*/, (i + 1) + '. ');
+        });
+      }
+
+      function terminer(annule) {
+        if (!glisse) return;
+        const etat = glisse;
+        glisse = null;
+
+        if (!etat.actif) return;
+
+        etat.ligne.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        reorganisationEnCours = false;
+
+        const arrivee = lignes().indexOf(etat.ligne);
+        if (annule || arrivee < 0 || arrivee === etat.depart) {
+          loadPlaylist();   // remet la liste dans l'ordre du serveur
+          return;
+        }
+        moveTrack(etat.depart, arrivee);   // recharge la liste en cas de succès
+      }
+
+      window.addEventListener('pointerup', () => terminer(false));
+      window.addEventListener('pointercancel', () => terminer(true));
+    })();
+
+    /* ── RECOMMANDATIONS DE QUOTAS ────────────────────────────────────
+       Principe : la file d'attente ne doit pas gonfler plus vite que la
+       musique ne se joue. Une piste dure D minutes en moyenne, il y a N
+       invités qui participent, et on vise une file de T minutes.
+
+         • quota   = T / (N × D)      pile ce qu'il faut pour remplir la
+                                      file cible si tout le monde ajoute
+         • fenêtre = T                la file se vide en T minutes, les
+                                      quotas se rechargent au même rythme
+         • délai   = min(N × D,       N × D = un tour de table complet ;
+                        fenêtre/quota) jamais plus que ce qui permet
+                                      d'utiliser réellement son quota
+
+       D et N viennent des données réelles : durée moyenne des pistes
+       déjà ajoutées, et invités ayant effectivement ajouté quelque chose.
+       ──────────────────────────────────────────────────────────────── */
+
+    const RECO_DUREE_DEFAUT = 3.5;   // minutes, tant qu'aucune piste n'a été ajoutée
+    let recoCible = 45;              // minutes de file visées
+    let recoDerniere = null;         // dernières valeurs calculées
+
+    function arrondiPas(valeur, pas) {
+      return Math.round(valeur / pas) * pas;
+    }
+
+    function borner(valeur, mini, maxi) {
+      return Math.min(maxi, Math.max(mini, valeur));
+    }
+
+    function minutesTexte(minutes) {
+      const m = Math.round(minutes);
+      if (m < 60) return `${m} min`;
+      const h = Math.floor(m / 60);
+      const reste = m % 60;
+      return reste ? `${h} h ${String(reste).padStart(2, '0')}` : `${h} h`;
+    }
+
+    function calculerRecommandations() {
+      const playlist = dernierePlaylist ? dernierePlaylist.playlist : [];
+      const users = derniersUtilisateurs || [];
+
+      // Durée moyenne réellement observée sur ce que les invités ajoutent
+      const durees = playlist.map(t => Number(t.duration)).filter(d => d > 0);
+      const dureeMoy = durees.length
+        ? durees.reduce((a, b) => a + b, 0) / durees.length / 60
+        : RECO_DUREE_DEFAUT;
+
+      // Qui participe vraiment : dès que deux personnes ont ajouté, on se
+      // base sur elles plutôt que sur le nombre de codes distribués.
+      const inscrits = users.length;
+      const actifs = users.filter(u => Number(u.addedSongs) > 0).length;
+      const participants = Math.max(actifs >= 2 ? actifs : inscrits, 1);
+
+      // État de la file : ce qu'il reste à jouer après la piste en cours
+      const idx = dernierePlaylist ? dernierePlaylist.currentIndex : 0;
+      const aVenir = playlist.slice(idx + 1);
+      const attente = aVenir.reduce((total, t) => total + (Number(t.duration) || 0), 0) / 60;
+
+      // Régime d'équilibre : personne n'ajoute plus vite que la musique
+      // ne se joue. C'est le point de départ, pas le mot de la fin.
+      const quotaBase = recoCible / (participants * dureeMoy);
+      const delaiEquilibre = participants * dureeMoy;
+
+      /* Correction selon l'état réel de la file. remplissage vaut 1 quand
+         la file est pile à la cible, 0 quand elle est vide, 2 quand elle
+         fait le double. File courte → on ouvre les vannes : délai
+         raccourci (jusqu'à ×0,35) et quota élargi (jusqu'au double).
+         File trop longue → on resserre dans l'autre sens. */
+      const remplissage = attente / recoCible;
+      const ouvertureDelai = borner(remplissage, 0.35, 1.6);
+      const ouvertureQuota = borner(remplissage, 0.5, 1.4);
+
+      const quotaExact = quotaBase / ouvertureQuota;
+      const quota = borner(Math.round(quotaExact), 1, 20);
+      const fenetre = borner(arrondiPas(recoCible, 5), 5, 10080);
+      const delai = borner(
+        arrondiPas(Math.min(delaiEquilibre * ouvertureDelai, fenetre / quota), 0.5),
+        0.5,
+        60
+      );
+
+      // Répartition des ajouts entre invités
+      const parInvite = {};
+      playlist.forEach((t) => {
+        const nom = t.addedBy || 'Admin';
+        parInvite[nom] = (parInvite[nom] || 0) + 1;
+      });
+      const classement = Object.entries(parInvite).sort((a, b) => b[1] - a[1]);
+      const bloques = users.filter(u => u.canAdd && !u.canAdd.allowed && u.canAdd.limit === 'quota').length;
+
+      return {
+        quota, quotaExact, fenetre, delai, dureeMoy, participants, inscrits, actifs,
+        attente, remplissage, aVenir: aVenir.length, classement, bloques,
+        totalAjouts: playlist.length,
+        sansDonnees: durees.length === 0
+      };
+    }
+
+    function afficherRecommandations() {
+      if (!document.getElementById('recoConstats')) return;
+
+      const r = calculerRecommandations();
+      recoDerniere = r;
+
+      document.getElementById('recoBase').textContent =
+        `${r.participants} invité${r.participants > 1 ? 's' : ''} · ` +
+        `${r.sansDonnees ? '~' : ''}${r.dureeMoy.toFixed(1).replace('.', ',')} min/piste`;
+
+      // Chaque champ porte sa propre recommandation : un clic l'adopte
+      [['setMaxSongs', r.quota], ['setCooldown', r.delai], ['setWindow', r.fenetre]]
+        .forEach(([id, valeur]) => {
+          const pastille = document.querySelector(`.reco-chip[data-champ="${id}"]`);
+          if (!pastille) return;
+          const actuel = Number(document.getElementById(id).value);
+          pastille.textContent = valeur;
+          pastille.dataset.valeur = valeur;
+          pastille.classList.toggle('ok', Math.abs(actuel - valeur) < 0.01);
+        });
+
+      // Constats : ce que disent les données, au-delà des chiffres proposés
+      const constats = [];
+
+      if (r.totalAjouts === 0) {
+        constats.push(['', 'Aucune chanson ajoutée : les valeurs sont estimées sur une durée moyenne de 3,5 min.']);
+      } else {
+        constats.push(['', `File d'attente : ${minutesTexte(r.attente)} (${r.aVenir} piste${r.aVenir > 1 ? 's' : ''} à venir).`]);
+      }
+
+      if (r.totalAjouts > 0 && r.remplissage < 0.6) {
+        constats.push(['ok', `File courte : délai d'ajout raccourci et quota élargi pour la remplir.`]);
+      } else if (r.remplissage > 1.3) {
+        constats.push(['', `File bien remplie : délai allongé et quota resserré, le temps qu'elle redescende.`]);
+      }
+
+      if (r.attente > recoCible * 2 && r.aVenir > 3) {
+        constats.push(['alerte', `La file dépasse le double de la cible : resserrez le quota ou allongez le délai.`]);
+      } else if (r.totalAjouts > 0 && r.attente < recoCible / 3 && r.bloques > 0) {
+        constats.push(['alerte', `${r.bloques} invité${r.bloques > 1 ? 's sont bloqués' : ' est bloqué'} par le quota alors que la file ne tient que ${minutesTexte(r.attente)} : desserrez.`]);
+      }
+
+      if (r.classement.length && r.totalAjouts >= 4) {
+        const [nom, nb] = r.classement[0];
+        const part = nb / r.totalAjouts;
+        if (part > 0.45 && r.classement.length > 1) {
+          constats.push(['alerte', `${nom} a ajouté ${nb} des ${r.totalAjouts} pistes : le quota par invité est trop large pour équilibrer.`]);
+        }
+      }
+
+      if (r.inscrits > 0 && r.actifs > 0 && r.actifs < r.inscrits) {
+        constats.push(['', `${r.actifs} invité${r.actifs > 1 ? 's actifs' : ' actif'} sur ${r.inscrits} inscrit${r.inscrits > 1 ? 's' : ''} — le calcul suit les invités actifs.`]);
+      }
+
+      if (r.dureeMoy > 5) {
+        constats.push(['', `Morceaux longs (${r.dureeMoy.toFixed(1).replace('.', ',')} min) : chaque ajout pèse lourd dans la file.`]);
+      }
+
+      document.getElementById('recoConstats').innerHTML = constats.map(([type, texte]) =>
+        `<div class="reco-constat ${type}">${type === 'alerte' ? '⚠' : '•'} <span>${escapeHtml(texte)}</span></div>`
+      ).join('');
+    }
+
+    function preremplirRecommandations() {
+      if (!recoDerniere) afficherRecommandations();
+      if (!recoDerniere) return;
+
+      document.getElementById('setMaxSongs').value = recoDerniere.quota;
+      document.getElementById('setCooldown').value = recoDerniere.delai;
+      document.getElementById('setWindow').value = recoDerniere.fenetre;
+      settingsDirty = true;   // le rafraîchissement ne doit pas écraser la proposition
+
+      const msg = document.getElementById('settingsMsg');
+      msg.style.color = '#00e5ff';
+      msg.textContent = '↑ Valeurs proposées — cliquez sur « Appliquer » pour enregistrer.';
+      afficherRecommandations();
+    }
+
+    // Adopter une seule valeur recommandée
+    (function () {
+      const boite = document.getElementById('quotasBox');
+      if (!boite) return;
+      boite.addEventListener('click', (event) => {
+        const pastille = event.target.closest('.reco-chip');
+        if (!pastille || pastille.classList.contains('ok')) return;
+        const champ = document.getElementById(pastille.dataset.champ);
+        if (!champ || champ.disabled) return;
+        champ.value = pastille.dataset.valeur;
+        settingsDirty = true;
+        afficherRecommandations();
+      });
+    })();
+
+    // Choix de la file visée
+    (function () {
+      const modes = document.getElementById('recoModes');
+      if (!modes) return;
+      modes.addEventListener('click', (event) => {
+        const bouton = event.target.closest('.reco-mode');
+        if (!bouton) return;
+        recoCible = Number(bouton.dataset.cible);
+        localStorage.setItem('jukeboxRecoCible', String(recoCible));
+        modes.querySelectorAll('.reco-mode').forEach(b => b.classList.toggle('active', b === bouton));
+        afficherRecommandations();
+        // Changer de cible doit se voir tout de suite, sans attendre le délai
+        if (typeof autoQuotas !== 'undefined' && autoQuotas) {
+          autoDernierAjustement = 0;
+          verifierAutoQuotas();
+        }
+      });
+    })();
+
+    /* ── QUOTAS DYNAMIQUES ────────────────────────────────────────────
+       Même calcul que les recommandations, mais appliqué tout seul au
+       serveur pendant la soirée : quand des invités arrivent, que la
+       file gonfle ou que la durée moyenne des morceaux change, les
+       limites suivent sans intervention.
+
+       Trois garde-fous, sinon les quotas oscilleraient en permanence :
+       - un intervalle minimum entre deux ajustements ;
+       - une zone morte : on ne bouge que si l'écart est net ;
+       - la main de l'admin est prioritaire (saisie en cours = pause).
+       ──────────────────────────────────────────────────────────────── */
+
+    const AUTO_INTERVALLE = 60000;   // ms minimum entre deux ajustements
+    const AUTO_ZONE_MORTE = 0.6;     // écart de quota en dessous duquel on ne touche à rien
+
+    let autoQuotas = false;
+    let autoDernierAjustement = 0;
+    let autoResume = '';
+    let autoEnCours = false;
+    // Quotas saisis à la main, mis de côté pendant le pilotage automatique
+    // et rétablis dès qu'on le désactive.
+    let quotasManuels = null;
+
+    function lireQuotasChamps() {
+      return {
+        quota: Number(document.getElementById('setMaxSongs').value),
+        delai: Number(document.getElementById('setCooldown').value),
+        fenetre: Number(document.getElementById('setWindow').value)
+      };
+    }
+
+    function memoriserQuotasManuels(valeurs) {
+      quotasManuels = valeurs;
+      if (valeurs) {
+        localStorage.setItem('jukeboxQuotasManuels', JSON.stringify(valeurs));
+      } else {
+        localStorage.removeItem('jukeboxQuotasManuels');
+      }
+    }
+
+    function texteQuotas(v) {
+      return `${v.quota} chanson${v.quota > 1 ? 's' : ''} / ${v.delai} min / fenêtre ${v.fenetre} min`;
+    }
+
+    function majAffichageAuto() {
+      const etat = document.getElementById('recoAutoEtat');
+      const boite = document.querySelector('.settings-box');
+      const bouton = document.getElementById('recoApply');
+      const champs = ['setMaxSongs', 'setCooldown', 'setWindow']
+        .map(id => document.getElementById(id));
+
+      boite.classList.toggle('auto', autoQuotas);
+      etat.classList.toggle('visible', autoQuotas);
+      bouton.style.display = autoQuotas ? 'none' : '';
+      champs.forEach(c => { c.disabled = autoQuotas; });
+
+      if (!autoQuotas) return;
+      const rappel = quotasManuels
+        ? `<br><span style="opacity:.7">Vos quotas manuels (${texteQuotas(quotasManuels)}) seront rétablis à l'arrêt.</span>`
+        : '';
+      etat.innerHTML = (autoResume || 'En attente des premières données…') + rappel;
+    }
+
+    async function basculerAutoQuotas(actif) {
+      autoQuotas = actif;
+      localStorage.setItem('jukeboxAutoQuotas', actif ? '1' : '0');
+      const msg = document.getElementById('settingsMsg');
+
+      if (actif) {
+        // On photographie les quotas en place avant de laisser la main
+        // au calcul automatique : ce sont eux qu'on rendra à l'arrêt.
+        memoriserQuotasManuels(lireQuotasChamps());
+        settingsDirty = false;       // on repart des valeurs du serveur
+        autoDernierAjustement = 0;   // premier ajustement immédiat
+        autoResume = '';
+        majAffichageAuto();
+        afficherRecommandations();
+        verifierAutoQuotas();
+        return;
+      }
+
+      autoResume = '';
+      majAffichageAuto();
+
+      const memorises = quotasManuels;
+      if (memorises) {
+        const actuels = lireQuotasChamps();
+        const identique = actuels.quota === memorises.quota
+          && actuels.delai === memorises.delai
+          && actuels.fenetre === memorises.fenetre;
+        if (!identique) {
+          try {
+            const ok = await envoyerQuotas(memorises.quota, memorises.delai, memorises.fenetre);
+            if (ok) {
+              msg.style.color = '#34d399';
+              msg.textContent = `↩ Quotas manuels rétablis : ${texteQuotas(memorises)}`;
+              setTimeout(() => { if (msg.textContent.startsWith('↩')) msg.textContent = ''; }, 6000);
+              settingsDirty = false;
+              loadSettings();
+              loadUsers();
+            }
+          } catch (error) {
+            if (error.message !== 'unauthorized') console.error('Restitution des quotas impossible:', error);
+          }
+        }
+        memoriserQuotasManuels(null);
+      }
+      afficherRecommandations();
+    }
+
+    // Envoie les trois limites au serveur en gardant fondu et recherche tels quels
+    async function envoyerQuotas(quota, delai, fenetre) {
+      const corps = {
+        maxSongsPerUser: quota,
+        cooldownMinutes: delai,
+        quotaWindowMinutes: fenetre,
+        fadeSeconds: Number(document.getElementById('setFade').value),
+        soulseekSearchSeconds: Number(document.getElementById('setSoulseekSearch').value)
+      };
+      const response = await adminFetch(`${API_BASE}/admin/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(corps)
+      });
+      return response.ok;
+    }
+
+    async function verifierAutoQuotas() {
+      if (!autoQuotas || autoEnCours || !adminToken) return;
+      if (!derniersUtilisateurs || !dernierePlaylist) return;
+      if (derniersUtilisateurs.length === 0) {
+        autoResume = 'Aucun invité inscrit : rien à ajuster pour l\'instant.';
+        majAffichageAuto();
+        return;
+      }
+
+      const maintenant = Date.now();
+      if (maintenant - autoDernierAjustement < AUTO_INTERVALLE) return;
+
+      const r = calculerRecommandations();
+      const actuelQuota = Number(document.getElementById('setMaxSongs').value);
+      const actuelDelai = Number(document.getElementById('setCooldown').value);
+      const actuelFenetre = Number(document.getElementById('setWindow').value);
+
+      // Zone morte : le quota exact est un nombre à virgule, on ne change
+      // la valeur entière que lorsqu'il s'en éloigne franchement.
+      const bougeQuota = Math.abs(r.quotaExact - actuelQuota) >= AUTO_ZONE_MORTE && r.quota !== actuelQuota;
+      const bougeDelai = Math.abs(r.delai - actuelDelai) >= Math.max(1, actuelDelai * 0.15);
+      const bougeFenetre = r.fenetre !== actuelFenetre;
+
+      if (!bougeQuota && !bougeDelai && !bougeFenetre) return;
+
+      const quota = bougeQuota ? r.quota : actuelQuota;
+      const delai = bougeDelai ? r.delai : actuelDelai;
+      const fenetre = bougeFenetre ? r.fenetre : actuelFenetre;
+
+      autoEnCours = true;
+      try {
+        const ok = await envoyerQuotas(quota, delai, fenetre);
+        if (ok) {
+          autoDernierAjustement = maintenant;
+          const heure = new Date().toLocaleTimeString('fr-CH', { hour: '2-digit', minute: '2-digit' });
+          autoResume = `Actif · dernier ajustement à <b>${heure}</b> :<br>` +
+                       `<b>${quota}</b> chanson${quota > 1 ? 's' : ''} / <b>${delai} min</b> de délai / ` +
+                       `fenêtre <b>${fenetre} min</b><br>` +
+                       `<span style="opacity:.7">${r.participants} invité${r.participants > 1 ? 's' : ''} actif${r.participants > 1 ? 's' : ''} · ` +
+                       `${r.dureeMoy.toFixed(1).replace('.', ',')} min/piste · file ${Math.round(r.attente)} min</span>`;
+          loadSettings();
+          loadUsers();
+          majAffichageAuto();
+        }
+      } catch (error) {
+        if (error.message !== 'unauthorized') console.error('Ajustement automatique impossible:', error);
+      } finally {
+        autoEnCours = false;
+      }
+    }
+
+    // Branchement de la case à cocher + reprise de l'état précédent
+    (function () {
+      const case_ = document.getElementById('recoAuto');
+      if (!case_) return;
+
+      const cibleMemorisee = Number(localStorage.getItem('jukeboxRecoCible'));
+      if ([20, 45, 90].includes(cibleMemorisee)) {
+        recoCible = cibleMemorisee;
+        document.querySelectorAll('.reco-mode').forEach(b =>
+          b.classList.toggle('active', Number(b.dataset.cible) === cibleMemorisee));
+      }
+
+      case_.checked = localStorage.getItem('jukeboxAutoQuotas') === '1';
+      autoQuotas = case_.checked;
+
+      // Une soirée qui reprend après un rechargement de page retrouve
+      // les quotas manuels mis de côté au moment de l'activation.
+      if (autoQuotas) {
+        try {
+          const memo = JSON.parse(localStorage.getItem('jukeboxQuotasManuels') || 'null');
+          if (memo && typeof memo.quota === 'number') quotasManuels = memo;
+        } catch (error) { quotasManuels = null; }
+      } else {
+        localStorage.removeItem('jukeboxQuotasManuels');
+      }
+      case_.addEventListener('change', () => basculerAutoQuotas(case_.checked));
+      majAffichageAuto();
+    })();
+  </script>
+</body>
+</html>
