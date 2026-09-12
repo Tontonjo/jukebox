@@ -5,7 +5,7 @@
 - **Node.js** >= 14.0.0 et npm
 - **Nginx** (ou autre serveur web reverse proxy)
 - **Navidrome** (optionnel, pour la musique locale)
-- **sockseek** (optionnel, pour le repli Soulseek)
+- **sockseek** (optionnel, pour le repli Soulseek) - Doit être installé séparemment
 
 ## Installation
 
