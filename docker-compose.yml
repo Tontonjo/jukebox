@@ -1,152 +1,107 @@
-version: '3.8'
+# ============= JUKEBOX - DOCKER COMPOSE =============
+# Version 1.2.0 - last updated: 12 September 2026
+# Changelog:
+#   1.2.0 - jukebox is now the only service. Navidrome and nginx were removed:
+#           they are expected to run outside this compose file (host, another
+#           stack, or another machine). Comments translated to English.
+#   1.1.0 - jukebox + navidrome + nginx stack.
+#
+# Start:  docker compose up -d
+# Only the jukebox container is started by this file.
 
 services:
-  # Application Jukebox
   jukebox:
     build: .
     container_name: jukebox
     restart: unless-stopped
+
     ports:
       - "3000:3000"
+
     environment:
       NODE_ENV: production
       PORT: 3000
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
-      
-      # Navidrome
+
+      # ----- Navidrome / Subsonic (external server) -----
+      # Navidrome is not started here. Point this at wherever it actually runs.
+      # host.docker.internal reaches a Navidrome running on the Docker host;
+      # use a LAN address (http://192.168.1.100:4533) for another machine.
       NAVIDROME_ENABLED: ${NAVIDROME_ENABLED:-true}
-      NAVIDROME_URL: http://navidrome:4533
+      NAVIDROME_URL: ${NAVIDROME_URL:-http://host.docker.internal:4533}
       NAVIDROME_USER: ${NAVIDROME_USER:-admin}
       NAVIDROME_PASS: ${NAVIDROME_PASS:-password}
-      
-      # Soulseek (via sockseek)
+
+      # ----- Soulseek (via sockseek) -----
+      # sockseek is not bundled in the image: the daemon runs alongside it,
+      # so autostart stays off and SOCKSEEK_REMOTE points at the host.
       SOULSEEK_ENABLED: ${SOULSEEK_ENABLED:-true}
       SOCKSEEK_PATH: ${SOCKSEEK_PATH:-sockseek}
-      SOCKSEEK_REMOTE: ${SOCKSEEK_REMOTE:-http://127.0.0.1:5030}
-      # sockseek n'est pas dans l'image : le démon tourne à côté
+      SOCKSEEK_REMOTE: ${SOCKSEEK_REMOTE:-http://host.docker.internal:5030}
       SOCKSEEK_AUTOSTART: ${SOCKSEEK_AUTOSTART:-false}
-      # Adresse publique pour le QR code et le lien invité (vide = déduite)
-      PUBLIC_URL: ${PUBLIC_URL:-}
+      SOULSEEK_MAX_RESULTS: ${SOULSEEK_MAX_RESULTS:-10}
+      SOULSEEK_SEARCH_TIME: ${SOULSEEK_SEARCH_TIME:-20000}
+      SOULSEEK_DOWNLOAD_TIMEOUT: ${SOULSEEK_DOWNLOAD_TIMEOUT:-30}
+      SOULSEEK_MAX_DOWNLOADS: ${SOULSEEK_MAX_DOWNLOADS:-2}
       SOULSEEK_DELETE_AFTER_PLAY: ${SOULSEEK_DELETE_AFTER_PLAY:-true}
-      
-      # Jukebox Settings
+      SOULSEEK_RATE_LIMIT: ${SOULSEEK_RATE_LIMIT:-30}
+
+      # ----- Jukebox settings -----
+      # Public address used for the QR code and the guest link.
+      # Leave empty to let the server work it out by itself.
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      FADE_SECONDS: ${FADE_SECONDS:-3}
       MAX_SONGS_PER_USER: ${MAX_SONGS_PER_USER:-3}
       COOLDOWN_MINUTES: ${COOLDOWN_MINUTES:-5}
+      QUOTA_WINDOW_MINUTES: ${QUOTA_WINDOW_MINUTES:-60}
       SESSION_DURATION: ${SESSION_DURATION:-120}
-    
-    depends_on:
-      - navidrome
-    
-    networks:
-      - jukebox-network
-    
+
+      # ----- Lyrics -----
+      LRCLIB_BASE: ${LRCLIB_BASE:-https://lrclib.net}
+
+    # Lets the container reach services bound to the Docker host (Navidrome,
+    # the sockseek daemon). Native on Docker Desktop; this line is what makes
+    # it work on Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     volumes:
       - ./jukebox-server.js:/app/jukebox-server.js:ro
       - ./qrcode.js:/app/qrcode.js:ro
       - ./public:/app/public:ro
-    
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/config"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 5s
-    
+
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
 
-  # Navidrome - Serveur de musique
-  navidrome:
-    image: deluan/navidrome:latest
-    container_name: navidrome
-    restart: unless-stopped
-    ports:
-      - "4533:4533"
-    
-    environment:
-      ND_LOGLEVEL: info
-      ND_SCANINTERVAL: 60m
-      ND_BASEURL: /navidrome
-      # Changer si vous utilisez un SSL
-      # ND_ENABLEEXTERNALAPI: "true"
-    
-    volumes:
-      # Musique
-      - ${MUSIC_PATH:-./music}:/music:ro
-      # Données Navidrome
-      - navidrome_data:/data
-    
-    networks:
-      - jukebox-network
-    
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4533/rest/ping.json?u=admin&p=admin&c=jukebox&v=1.12.0"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-  # Nginx - Reverse proxy
-  nginx:
-    image: nginx:alpine
-    container_name: jukebox-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      # Dé-commenter pour HTTPS
-      # - "443:443"
-    
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      # Certificats SSL (si HTTPS)
-      # - ./certs:/etc/nginx/certs:ro
-    
-    networks:
-      - jukebox-network
-    
-    depends_on:
-      - jukebox
-    
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-networks:
-  jukebox-network:
-    driver: bridge
-
-volumes:
-  navidrome_data:
-    driver: local
-
 # ============= QUICK START =============
-# 1. Créer fichier .env:
-#    cp .env.example .env
-#    nano .env  # Éditer
+# 1. Create the .env file:
+#      cp .env.example .env
+#      nano .env
+#    Set NAVIDROME_URL to your existing Navidrome server.
 #
-# 2. Préparer la musique:
-#    mkdir -p ./music
-#    # Copier vos fichiers MP3/FLAC dans ./music
+# 2. Start:
+#      docker compose up -d
 #
-# 3. Lancer:
-#    docker-compose up -d
+# 3. Open:
+#      - Jukebox:       http://localhost:3000
+#      - Jukebox admin: http://localhost:3000/admin
 #
-# 4. Accédez à:
-#    - Jukebox: http://localhost
-#    - Jukebox Admin: http://localhost/admin
-#    - Navidrome: http://localhost:4533
-#
-# 5. Admin credentials:
-#    Jukebox: utiliser ADMIN_PASSWORD
-#    Navidrome: admin / admin (par défaut)
+# Note: no reverse proxy is started here. To serve the jukebox on port 80/443,
+# put nginx (or Caddy/Traefik) in front of it on the host - nginx.conf and
+# nginx.ssl.conf in this folder are still valid starting points.
 #
 # ============= COMMANDS =============
-# Voir logs: docker-compose logs -f
-# Arrêter: docker-compose down
-# Redémarrer: docker-compose restart
-# Nettoyer: docker-compose down -v
+# Logs:     docker compose logs -f
+# Stop:     docker compose down
+# Restart:  docker compose restart
+# Rebuild:  docker compose up -d --build
