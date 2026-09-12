@@ -99,7 +99,7 @@ Trois pages, trois rôles bien séparés :
 ## Installation
 
 ```bash
-sudo apt update && sudo apt install git
+sudo apt update && sudo apt install git nano
 git clone https://github.com/Tontonjo/jukebox
 cd jukebox
 
@@ -132,7 +132,7 @@ les commandes Nginx / systemd / PM2 adaptées à votre machine.
 
 ```bash
 cp .env.example .env && nano .env
-mkdir -p ./music        # y copier vos MP3 / FLAC
+mkdir -p ./music        
 docker compose up -d
 ```
 
