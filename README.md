@@ -99,7 +99,8 @@ Trois pages, trois rôles bien séparés :
 ## Installation
 
 ```bash
-git clone https://github.com/<votre-compte>/jukebox.git
+sudo apt update && sudo apt install git
+git clone https://github.com/Tontonjo/jukebox
 cd jukebox
 
 npm ci                 # ou: npm install
@@ -226,6 +227,8 @@ premier lancement le navigateur peut bloquer le son : un clic sur le voile
 ## Déploiement en production
 
 ### 1. Service systemd
+
+Editer le fichier jukebox.service: les chemins doivent correspondre à votre installation.
 
 ```bash
 sudo cp jukebox.service /etc/systemd/system/
