@@ -6,6 +6,9 @@ Jukebox web pour les soirées : un **écran de lecture** branché aux enceintes,
 **panneau admin** qui commande tout, une **page invité** où les personnes
 autorisées ajoutent leurs morceaux sous quota.
 
+<img width="500" height="600" alt="image" src="https://github.com/user-attachments/assets/9b7efc59-8527-4ee9-a332-1e394b46d94c" />
+
+
 La musique vient de **Navidrome** ; à défaut, repli sur **Soulseek** (via
 [sockseek](https://github.com/fiso64/sockseek), fichiers supprimés après lecture).
 **Aucune base de données** : playlist, sessions et codes vivent en RAM et
@@ -16,7 +19,8 @@ disparaissent au redémarrage — c'est voulu, l'outil est fait pour une soirée
 ![Licence](https://img.shields.io/badge/licence-MIT-lightgrey)
 
 **Tonton Jo** — [YouTube](http://youtube.com/channel/UCnED3K6K5FDUp-x_8rwpsZw?sub_confirmation=1) ·
-[Discord](https://discord.gg/h6UcpwfGuJ) · [Ko-Fi](https://ko-fi.com/tontonjo) ·
+[Discord](https://discord.gg/h6UcpwfGuJ) · [Ko-Fi](![Uploading Capture d'écran 2026-09-12 104623.png…]()
+https://ko-fi.com/tontonjo) ·
 [Infomaniak](https://www.infomaniak.com/goto/fr/home?utm_term=6151f412daf35) ·
 [tutoriel vidéo](https://www.youtube.com/watch?v=TBD)
 
