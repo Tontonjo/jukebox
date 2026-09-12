@@ -6,8 +6,10 @@ Jukebox web pour les soirées : un **écran de lecture** branché aux enceintes,
 **panneau admin** qui commande tout, une **page invité** où les personnes
 autorisées ajoutent leurs morceaux sous quota.
 
-<img width="300" height="300<img width="1239" height="1059" alt="Capture d&#39;écran 2026-09-12 104623" src="https://github.com/user-attachments/assets/9bffe786-f4cb-4627-b7ee-3a09fe518752" />
-" alt="image" src="https://github.com/user-attachments/assets/9b7efc59-8527-4ee9-a332-1e394b46d94c" />
+<img width="300" height="300" alt="Capture d&#39;écran 2026-09-12 104623" src="https://github.com/user-attachments/assets/bf983656-8d96-43ec-a55f-3866007b4374" />
+
+
+
 
 La musique vient de **Navidrome** ; à défaut, repli sur **Soulseek** (via
 [sockseek](https://github.com/fiso64/sockseek), fichiers supprimés après lecture).
