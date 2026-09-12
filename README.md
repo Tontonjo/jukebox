@@ -8,22 +8,19 @@ autorisées ajoutent leurs morceaux sous quota.
 
 <img width="550" height="500" alt="Capture d&#39;écran 2026-09-12 104623" src="https://github.com/user-attachments/assets/bf983656-8d96-43ec-a55f-3866007b4374" />
 
-
-
-
 La musique vient de **Navidrome** ; à défaut, repli sur **Soulseek** (via
 [sockseek](https://github.com/fiso64/sockseek), fichiers supprimés après lecture).
 **Aucune base de données** : playlist, sessions et codes vivent en RAM et
 disparaissent au redémarrage — c'est voulu, l'outil est fait pour une soirée.
 
-![Status](https://img.shields.io/badge/status-production%20ready-brightgreen)
-![Node](https://img.shields.io/badge/node-%E2%89%A518-blue)
-![Licence](https://img.shields.io/badge/licence-MIT-lightgrey)
+## Tonton Jo  
+### Join the community:
+[![Youtube](https://badgen.net/badge/Youtube/Subscribe)](http://youtube.com/channel/UCnED3K6K5FDUp-x_8rwpsZw?sub_confirmation=1)
+[![Discord Tonton Jo](https://badgen.net/discord/members/h6UcpwfGuJ?label=Discord%20Tonton%20Jo%20&icon=discord)](https://discord.gg/h6UcpwfGuJ)
+### Support my work, give a thanks and help the youtube channel:
+[![Ko-Fi](https://badgen.net/badge/Buy%20me%20a%20Coffee/Link?icon=buymeacoffee)](https://ko-fi.com/tontonjo)
+[![Infomaniak](https://badgen.net/badge/Infomaniak/Affiliated%20link?icon=K)](https://www.infomaniak.com/goto/fr/home?utm_term=6151f412daf35)
 
-**Tonton Jo** — [YouTube](http://youtube.com/channel/UCnED3K6K5FDUp-x_8rwpsZw?sub_confirmation=1) ·
-[Discord](https://discord.gg/h6UcpwfGuJ) · [Ko-Fi](![Uploading Capture d'écran 2026-09-12 104623.png…]()
-https://ko-fi.com/tontonjo) ·
-[Infomaniak](https://www.infomaniak.com/goto/fr/home?utm_term=6151f412daf35) ·
 [tutoriel vidéo](https://www.youtube.com/watch?v=TBD)
 
 ## Les trois pages
