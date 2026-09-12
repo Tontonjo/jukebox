@@ -124,11 +124,6 @@ sudo nginx -t && sudo systemctl reload nginx
 Alternative à systemd : `pm2 start jukebox-server.js --name jukebox`, puis
 `pm2 startup && pm2 save`.
 
-**HTTPS → [SSL.md](SSL.md)** (Certbot, renouvellement, dépannage ; configuration
-prête dans [`nginx.ssl.conf`](nginx.ssl.conf)). Ce n'est pas cosmétique : le
-bouton « copier le lien invité » et plusieurs API navigateur exigent une origine
-sécurisée.
-
 ## Architecture
 
 ```
