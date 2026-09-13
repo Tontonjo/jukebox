@@ -21,7 +21,7 @@ disparaissent au redémarrage — c'est voulu, l'outil est fait pour une soirée
 [![Ko-Fi](https://badgen.net/badge/Buy%20me%20a%20Coffee/Link?icon=buymeacoffee)](https://ko-fi.com/tontonjo)
 [![Infomaniak](https://badgen.net/badge/Infomaniak/Affiliated%20link?icon=K)](https://www.infomaniak.com/goto/fr/home?utm_term=6151f412daf35)
 
-[tutoriel vidéo]([https://youtu.be/C2LB1vezhAY])
+[Tutoriel vidéo et démonstration](https://youtu.be/C2LB1vezhAY)
 
 ## Les trois pages
 
