@@ -40,21 +40,34 @@ redémarrage.
 ## Installation
 
 Node.js ≥ 18. Facultatifs : Navidrome joignable, `sockseek` dans le `PATH`,
-Nginx + domaine pour le HTTPS ([SSL.md](SSL.md)).
 
 ```bash
 git clone https://github.com/Tontonjo/jukebox && cd jukebox
 npm ci
 cp .env.example .env
 nano .env              # au minimum : ADMIN_PASSWORD et les accès Navidrome
+```
+
+Test ou utilisation temporaire:
+```bash
 npm start              # port 3000 : / , /admin , /guest
 ```
 
-Deux variantes : `chmod +x install.sh && ./install.sh` (vérifie les prérequis,
-crée le `.env`, affiche les commandes Nginx / systemd / PM2 de votre machine), ou
-Docker Compose — `cp .env.example .env`, `mkdir -p ./music`, `docker compose up -d`
-(jukebox + Navidrome + Nginx ; `sockseek` n'est pas dans l'image : démon à côté,
-`SOCKSEEK_REMOTE` dessus et `SOCKSEEK_AUTOSTART=false`).
+Installation comme service:
+Sysdemd
+```bash
+sudo cp jukebox.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable jukebox
+sudo systemctl start jukebox
+sudo systemctl status jukebox
+sudo journalctl -u jukebox -f
+```    
+Docker Compose:
+
+```bash
+docker compose up -d
+```
 
 ## Configuration
 
@@ -144,7 +157,7 @@ Nginx (TLS, gzip) → Node.js / Express :3000
 jukebox-server.js     # backend Express (routes, playlist, sources, streaming)
 qrcode.js             # QR code, sans dépendance ni réseau
 public/               # player.html · admin.html · guest.html
-nginx.conf            # reverse proxy HTTP        nginx.ssl.conf → HTTPS
+nginx.conf            # reverse proxy HTTP
 jukebox.service       # unité systemd             docker-compose.yml
 install.sh            # installation assistée     test-services.js
 ```
@@ -174,7 +187,7 @@ suivant / précédent), `/api/admin/playlist/clear` ; `GET|POST
 - **Ne committez jamais votre `.env`** (déjà dans `.gitignore`). S'il a fuité dans
   l'historique git : changez les mots de passe et réécrivez l'historique.
 - **Changez `ADMIN_PASSWORD`** — `admin123` est public.
-- **HTTPS dès que le jukebox sort du réseau local** ([SSL.md](SSL.md)).
+- **HTTPS recommandé avec un reverse proxy
 - Les codes invités sont en clair en mémoire, pour que l'organisateur puisse les
   relire. Rien sur disque, tout disparaît au redémarrage : ce sont des codes de
   soirée, pas des mots de passe personnels.
@@ -200,10 +213,7 @@ Dépannage complet : [DEPLOYMENT.md](DEPLOYMENT.md).
 ## Documentation et suite
 
 [QUICK_START.md](QUICK_START.md) démarrer en 5 min ·
-[SSL.md](SSL.md) HTTPS avec Certbot ·
 [DEPLOYMENT.md](DEPLOYMENT.md) production et dépannage détaillé ·
-[DEVELOPMENT.md](DEVELOPMENT.md) architecture du code et API interne ·
-[CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
 
 **Feuille de route** : Spotify · playlist persistante (optionnelle) · historique et
 statistiques admin · mode « vote » entre invités · recherche vocale
