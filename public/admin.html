@@ -1,4 +1,12 @@
 <!DOCTYPE html>
+<!-- ═══════════════════════════════════════════════════════════════
+     Jukebox — page Admin
+     Version 1.1.0 — 12.09.2026
+       1.1.0  Le bouton « + Ajouter » des résultats de recherche
+              répond au doigt sur téléphone (clavier, cible de tap,
+              défilement imbriqué, geste de bord).
+       1.0.0  Version de départ.
+     ═══════════════════════════════════════════════════════════════ -->
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
@@ -97,6 +105,10 @@
       transition: all 0.2s;
       font-weight: 700;
       box-shadow: 0 0 14px rgba(0, 229, 255, .25);
+      /* Au doigt : pas d'attente de double-tap pour zoomer, et un retour
+         visuel immédiat au contact. */
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: rgba(0, 229, 255, 0.3);
     }
 
     button:hover {
@@ -933,6 +945,19 @@
       background: rgba(0, 229, 255, 0.7);
     }
 
+    /* Écran tactile : il n'y a pas de survol. On neutralise le petit
+       soulèvement au survol, qu'iOS applique parfois au premier tap
+       au lieu de déclencher le bouton. */
+    @media (hover: none) {
+      button:hover,
+      .reco-chip:hover,
+      .item-code:hover,
+      .reco-mode:hover,
+      .drag-handle:hover {
+        transform: none;
+      }
+    }
+
     /* Une seule colonne : c'est la page entière qui défile, plus les colonnes */
     @media (max-width: 1200px) {
       body {
@@ -958,6 +983,14 @@
 
       .users-section {
         min-height: 0;
+      }
+
+      /* Plus de zone défilante imbriquée : ici c'est la page qui défile,
+         les résultats s'étalent à la suite. Un défilement dans un
+         défilement avale les taps au doigt. */
+      .search-results {
+        max-height: none;
+        overflow: visible;
       }
     }
 
@@ -1008,6 +1041,17 @@
 
       .item-actions button {
         padding: 8px 14px;
+        min-height: 40px;
+      }
+
+      /* « + Ajouter » sur toute la largeur de la ligne : une cible large,
+         loin des bords de l'écran où le navigateur interprète le geste
+         comme un balayage « page précédente ». */
+      .search-results .item-actions button {
+        flex: 1;
+        min-height: 46px;
+        font-size: 13px;
+        border-radius: 14px;
       }
 
       .modal-content {
@@ -1847,11 +1891,20 @@
         if (!relaunch) return;
       }
 
-      const query = document.getElementById('adminSearchInput').value.trim();
+      const champ = document.getElementById('adminSearchInput');
+      const query = champ.value.trim();
       if (query.length < 2) {
         showSearchMessage('Entrez au moins 2 caractères', 'error');
         return;
       }
+
+      // Sur téléphone, taper sur « Chercher » ne referme pas le clavier :
+      // Safari ne donne pas le focus aux boutons, le champ le garde. Le tap
+      // suivant servirait alors d'abord à refermer le clavier — la page se
+      // remet en place pendant le geste et le doigt n'est plus sur
+      // « + Ajouter » quand il se lève. On referme le clavier tout de
+      // suite : la barre de progression prend le relais à l'écran.
+      champ.blur();
 
       const resultsEl = document.getElementById('adminSearchResults');
       resultsEl.innerHTML = '';
@@ -1928,7 +1981,7 @@
             ${song.inPlaylist
               ? `<button class="duplicate" disabled>${
                   song.alreadyPlayed ? '✓ Déjà passée' : '✓ Déjà dans la liste'}</button>`
-              : `<button onclick="addSongToPlaylist(${idx}, this)">+ Ajouter</button>`}
+              : `<button type="button" data-add="${idx}">+ Ajouter</button>`}
           </div>
         </div>
       `).join('');
@@ -1997,6 +2050,55 @@
         showSearchMessage("Erreur lors de l'ajout", 'error');
       }
     }
+
+    /* ── AJOUT D'UN RÉSULTAT : CLIC ET DOIGT ──────────────────────────
+       Délégation sur le conteneur plutôt qu'un onclick par bouton : la
+       liste est réécrite à chaque recherche, le gestionnaire survit.
+
+       Et un filet pour le tactile : sur téléphone, un tap ne produit pas
+       toujours un « click » (page qui se remet en place sous le doigt,
+       clavier qui se referme, geste pris pour un balayage de bord). On
+       déclenche donc aussi sur pointerup, quand le doigt s'est levé sur
+       le même bouton sans avoir glissé — un glissé reste un défilement.
+       addSongToPlaylist() désactive le bouton dès le premier appel :
+       déclencher deux fois n'ajoute pas la chanson deux fois.
+       ──────────────────────────────────────────────────────────────── */
+    (function () {
+      const zone = document.getElementById('adminSearchResults');
+      if (!zone) return;
+
+      const TOLERANCE = 10;   // px de glissé encore considérés comme un tap
+      let depart = null;
+
+      function declencher(btn) {
+        if (!btn || btn.disabled) return;
+        const idx = Number(btn.dataset.add);
+        if (!Number.isFinite(idx)) return;
+        addSongToPlaylist(idx, btn);
+      }
+
+      zone.addEventListener('click', (event) => {
+        const btn = event.target.closest('button[data-add]');
+        if (btn) declencher(btn);
+      });
+
+      zone.addEventListener('pointerdown', (event) => {
+        const btn = event.target.closest('button[data-add]');
+        depart = btn ? { btn, x: event.clientX, y: event.clientY } : null;
+      });
+
+      zone.addEventListener('pointerup', (event) => {
+        const debut = depart;
+        depart = null;
+        if (!debut || event.pointerType === 'mouse') return;
+        if (event.target.closest('button[data-add]') !== debut.btn) return;
+        if (Math.abs(event.clientX - debut.x) > TOLERANCE) return;
+        if (Math.abs(event.clientY - debut.y) > TOLERANCE) return;
+        declencher(debut.btn);
+      });
+
+      zone.addEventListener('pointercancel', () => { depart = null; });
+    })();
 
     // ============= DIVERS =============
     async function updateServerStatus() {
