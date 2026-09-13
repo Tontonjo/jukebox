@@ -162,38 +162,15 @@ jukebox.service       # unité systemd             docker-compose.yml
 install.sh            # installation assistée     test-services.js
 ```
 
-## API
-
-**Public** — `GET /api/config`, `/api/search`, `/api/playlist`,
-`/api/guest/info/:userId`, `/api/stream/:source/:id` (relaie les requêtes Range),
-`/api/qr` ; `POST /api/playlist/add` (quota appliqué), `/api/guest/login`,
-`/api/player/event`.
-
-**Admin** — `POST /api/admin/auth`, `/api/admin/playback` (lecture / pause /
-suivant / précédent), `/api/admin/playlist/clear` ; `GET|POST
-/api/admin/search`, `/api/admin/playlist/add` (sans quota), `/api/admin/users` ;
-`DELETE /api/admin/playlist/:index` ; `PUT|DELETE /api/admin/users/:id` (renommer
-/ retirer) ; `POST /api/admin/users/:id/reset` (quota) et
-`/api/admin/users/:id/password` (nouveau code) ; `GET|PUT /api/admin/settings`
-(quotas à chaud).
-
-> `/api/player/event` n'est pas une commande : le serveur n'accepte que les
-> évènements (`ended` / `failed` / `position`) de la piste réellement en cours et
-> ignore une fin annoncée moins de 3 s après le démarrage. Payloads détaillés
-> dans [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Sécurité
 
-- **Ne committez jamais votre `.env`** (déjà dans `.gitignore`). S'il a fuité dans
-  l'historique git : changez les mots de passe et réécrivez l'historique.
 - **Changez `ADMIN_PASSWORD`** — `admin123` est public.
 - **HTTPS recommandé avec un reverse proxy
 - Les codes invités sont en clair en mémoire, pour que l'organisateur puisse les
   relire. Rien sur disque, tout disparaît au redémarrage : ce sont des codes de
   soirée, pas des mots de passe personnels.
 - N'exposez pas `/admin` publiquement sans restriction IP ou `auth_basic` Nginx.
-
-Failles : [SECURITY.md](SECURITY.md).
 
 ## Dépannage
 
@@ -215,8 +192,7 @@ Dépannage complet : [DEPLOYMENT.md](DEPLOYMENT.md).
 [QUICK_START.md](QUICK_START.md) démarrer en 5 min ·
 [DEPLOYMENT.md](DEPLOYMENT.md) production et dépannage détaillé ·
 
-**Feuille de route** : Spotify · playlist persistante (optionnelle) · historique et
-statistiques admin · mode « vote » entre invités · recherche vocale
+**Feuille de route** : Spotify · playlist persistante (optionnelle)
 
 **Merci à** [Navidrome](https://www.navidrome.org/) ·
 [sockseek](https://github.com/fiso64/sockseek) · [LRClib](https://lrclib.net/) ·
