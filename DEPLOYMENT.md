@@ -73,31 +73,6 @@ pm2 start jukebox-server.js --name jukebox
 pm2 startup && pm2 save      # pm2 monit / pm2 logs jukebox
 ```
 
-## 3. Nginx et HTTPS
-
-```bash
-sudo cp nginx.conf /etc/nginx/sites-available/jukebox
-sudo nano /etc/nginx/sites-available/jukebox   # jukebox.example.com → votre domaine
-sudo ln -s /etc/nginx/sites-available/jukebox /etc/nginx/sites-enabled/jukebox
-sudo rm /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-HTTPS : **[SSL.md](SSL.md)** (Certbot, `nginx.ssl.conf`, renouvellement, durcissement).
-
-> Derrière un reverse proxy, transmettez `X-Forwarded-Host` et
-> `X-Forwarded-Proto` — le `nginx.conf` fourni le fait — sinon le QR code et le
-> lien invité pointent sur l'adresse interne.
-
-## 4. Navidrome
-
-Créer un utilisateur pour le jukebox (ou réutiliser `admin`), vérifier que l'API
-Subsonic est active, puis tester :
-
-```bash
-curl "http://192.168.1.50:4533/rest/ping.json?u=jukebox&p=password&c=jukebox&v=1.12.0"
-```
-
 ## Comportements à connaître
 
 **Écran de lecture** — aucun contrôle, donc aucun mot de passe : tout vient de
@@ -209,46 +184,7 @@ Navidrome n'impose plus de timeout et relaie les requêtes `Range` — sans cela
 navigateur qui vide son tampon voyait son flux coupé au bout de 30 s. Derrière un
 reverse proxy, vérifier `proxy_read_timeout` et le passage des requêtes `Range`.
 
-### Logs
-
-```bash
-pm2 logs jukebox --err
-sudo journalctl -u jukebox -f
-sudo tail -f /var/log/nginx/jukebox_access.log /var/log/nginx/jukebox_error.log
-```
-
 ---
-
-## Production
-
-1. **HTTPS obligatoire** ([SSL.md](SSL.md)) · 2. **`ADMIN_PASSWORD` ≥ 16
-caractères** · 3. **Firewall** : n'ouvrir que 80/443 · 4. **Rate limiting** : à
-décommenter dans `nginx.conf` · 5. `npm audit fix` régulièrement.
-
-HTTP Basic devant `/admin`, au besoin :
-
-```bash
-sudo apt-get install apache2-utils
-sudo htpasswd -c /etc/nginx/.htpasswd admin
-```
-
-```nginx
-auth_basic "Admin Area";
-auth_basic_user_file /etc/nginx/.htpasswd;
-```
-
-`nginx.conf` active déjà gzip, keepalive et le buffering du streaming. Côté Node,
-PM2 sait faire du clustering (`pm2 start jukebox-server.js -i 2`) ; penser aussi
-aux limites de fichiers ouverts.
-
-⚠️ **Zéro base de données** : playlist, invités et quotas sont en RAM et ne
-survivent pas à un redémarrage. Aucune sauvegarde à faire — c'est le compromis
-assumé d'un outil d'événement ponctuel.
-
-```bash
-cd /home/jukebox && git pull origin main && npm ci
-sudo systemctl restart jukebox
-```
 
 En cas de blocage, vérifier dans l'ordre : les logs, les variables `.env`, la
 joignabilité de Navidrome et sockseek (`node test-services.js`), les permissions
