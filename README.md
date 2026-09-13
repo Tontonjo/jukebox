@@ -61,7 +61,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable jukebox
 sudo systemctl start jukebox
 sudo systemctl status jukebox
-sudo journalctl -u jukebox -f
+
+# Read the log
+sudo journalctl -u jukebox.service -n 50 -f
 ```    
 Docker Compose:
 
