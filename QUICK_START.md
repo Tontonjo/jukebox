@@ -2,35 +2,7 @@
 
 > **Jukebox 1.2.0** · doc rév. 2 — 12 septembre 2026
 > Node.js ≥ 18 requis. Vue d'ensemble : [README.md](README.md) · production :
-> [DEPLOYMENT.md](DEPLOYMENT.md) · HTTPS : [SSL.md](SSL.md)
-
-## Installer
-
-```bash
-# Script assisté (recommandé)
-chmod +x install.sh && ./install.sh
-nano .env
-node test-services.js      # optionnel : teste Navidrome, sockseek, LRClib
-npm start                  # → http://localhost:3000
-
-# Manuel
-npm ci && cp .env.example .env && nano .env && npm start
-
-# Docker Compose (jukebox + Navidrome + Nginx)
-cp .env.example .env && nano .env
-mkdir -p music             # y copier vos mp3/flac
-docker compose up -d       # → http://localhost, /admin, Navidrome :4533
-```
-
-`.env` minimal :
-
-```env
-ADMIN_PASSWORD=votrePasswordSecure123
-NAVIDROME_ENABLED=true
-NAVIDROME_URL=http://192.168.1.100:4533
-NAVIDROME_USER=admin
-NAVIDROME_PASS=votre_password
-```
+> [DEPLOYMENT.md](DEPLOYMENT.md)
 
 ## Les trois écrans
 
@@ -87,15 +59,6 @@ recherche ni ajout.
 - **Téléchargement échoué** : la chanson est retirée de la playlist et le crédit
   rendu à l'invité, qui en est prévenu.
 
-## Commandes utiles
-
-```bash
-npm run dev                          # dev, auto-reload
-npm start                            # production simple
-pm2 start jukebox-server.js --name jukebox   # puis: pm2 logs / stop / delete jukebox
-docker compose up -d / down / logs -f
-sudo journalctl -u jukebox -f        # si installé en service systemd
-```
 
 ## Réglages courants
 
@@ -106,22 +69,10 @@ COOLDOWN_MINUTES=5       # délai entre ajouts, 0 à 60
 SESSION_DURATION=120     # minutes avant réinitialisation de session
 ```
 
-## Exposer via un domaine
-
-```bash
-sudo cp nginx.conf /etc/nginx/sites-available/jukebox
-sudo nano /etc/nginx/sites-available/jukebox    # jukebox.example.com → votre domaine
-sudo ln -s /etc/nginx/sites-available/jukebox /etc/nginx/sites-enabled/jukebox
-sudo rm /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-Puis HTTPS : voir [SSL.md](SSL.md).
-
 ## Avant la production
 
 1. Changer `ADMIN_PASSWORD` dans `.env`.
-2. Activer HTTPS ([SSL.md](SSL.md)).
+2. Utiliser un reverse proxy.
 3. Ne créer que les invités nécessaires — la liste est vide au démarrage
    (personne ne peut rien ajouter) et repart de zéro à chaque redémarrage.
 4. Activer le rate limiting (section « Rate limiting » de `nginx.conf`).
@@ -137,5 +88,3 @@ Puis HTTPS : voir [SSL.md](SSL.md).
 | Paroles manquantes | LRClib n'a pas tous les titres — normal |
 | « Vous n'êtes pas autorisé » | Ajouter la personne dans /admin → Utilisateurs autorisés |
 | Liste d'utilisateurs vide après redémarrage | Normal, elle est en mémoire : la recréer |
-
-Dépannage complet : [DEPLOYMENT.md](DEPLOYMENT.md).
