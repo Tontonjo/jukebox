@@ -1,5 +1,16 @@
 <!DOCTYPE html>
-<!-- Jukebox — ecran de lecture — Version 1.1.3 (2026-09-12)
+<!-- Jukebox — ecran de lecture — Version 1.2.1 (2026-09-18)
+     1.2.1 — Correction : sur un flux en direct, le navigateur annonce une
+             duree qui suit ce qu'il a telecharge. Le lecteur se croyait
+             donc en permanence a quelques secondes de la fin et enchainait
+             les fondus de sortie — le volume montait et descendait sans
+             arret. Un direct n'a plus ni fondu de sortie ni fin annoncee.
+             Lecture des flux HLS (.m3u8) via hls.js, charge a la demande.
+     1.2.0 — Musique d'attente : quand plus aucune chanson n'attend son
+             tour, l'ecran joue la webradio ou la playlist Navidrome
+             choisie dans le panneau admin. Un bandeau l'annonce au-dessus
+             de la file. Le direct n'a ni duree ni fin : sa coupure
+             declenche une reconnexion, pas un passage a la suite.
      1.1.3 — L'ecran de lecture empeche desormais la mise en veille du PC :
              Screen Wake Lock quand la page est servie en HTTPS / localhost,
              sinon repli sur une micro-video noire muette en boucle (seule
@@ -298,6 +309,52 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
+    }
+
+    /* Bandeau de la musique d'attente, en tete de la file */
+    .attente-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(0, 229, 255, 0.1);
+      border: 1px solid rgba(0, 229, 255, 0.3);
+      font-size: 13px;
+      line-height: 1.4;
+      flex-shrink: 0;
+    }
+
+    .attente-banner .attente-titre {
+      font-weight: 700;
+      color: var(--neon);
+    }
+
+    .attente-banner .attente-note {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    /* Pastille rouge du direct */
+    .attente-live {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #ff4d6d;
+      box-shadow: 0 0 10px rgba(255, 77, 109, 0.8);
+      flex: none;
+      animation: pulseLive 1.6s ease-in-out infinite;
+    }
+
+    @keyframes pulseLive {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.25; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .attente-live { animation: none; }
     }
 
     .playlist-item {
@@ -916,6 +973,95 @@
     let fadeOutDemande = false;  // la piste suivante n'est demandée qu'une fois
     let playbackState = {};
 
+    // ---- Musique d'attente ----
+    // Quand plus aucune chanson d'invité n'attend son tour, le serveur
+    // désigne une webradio ou une piste de playlist : elle passe par le
+    // même <audio>, et l'écran signale sa fin de la même façon.
+    let enAttente = false;       // la source en cours est la musique d'attente
+    let echecsDirect = 0;        // reconnexions successives à la webradio
+
+    function cleSource(track) {
+      return track ? `${track.source}:${track.id}` : '';
+    }
+
+    // Les pistes d'attente ont leur propre adresse de lecture
+    function adresseFlux(track) {
+      return track.streamPath || `/api/stream/${track.source}/${track.id}`;
+    }
+
+    // ---- HLS (.m3u8) ----
+    // Une liste de segments n'est pas du son : <audio> n'en fait rien, sauf
+    // sur Safari. Partout ailleurs, hls.js la traduit en flux jouable. La
+    // bibliothèque est servie par le jukebox et chargée à la demande : une
+    // soirée sans flux HLS n'a aucune raison de la télécharger.
+    let hls = null;              // instance en cours
+    let hlsJs = null;            // promesse de chargement de la bibliothèque
+
+    function chargerHlsJs() {
+      if (window.Hls) return Promise.resolve(window.Hls);
+      if (hlsJs) return hlsJs;
+
+      hlsJs = new Promise(resolve => {
+        const balise = document.createElement('script');
+        balise.src = '/vendor/hls.js';
+        balise.onload = () => resolve(window.Hls || null);
+        balise.onerror = () => { hlsJs = null; resolve(null); };
+        document.head.appendChild(balise);
+      });
+      return hlsJs;
+    }
+
+    function arreterHls() {
+      if (!hls) return;
+      try { hls.destroy(); } catch (error) { /* déjà parti */ }
+      hls = null;
+    }
+
+    function hlsNatif() {
+      return Boolean(els.audio.canPlayType('application/vnd.apple.mpegurl'));
+    }
+
+    // Unique porte d'entrée de la lecture : c'est ici qu'on décide comment
+    // une piste arrive jusqu'à l'élément <audio>.
+    async function lancerFlux(track, recharger) {
+      arreterHls();
+
+      const url = adresseFlux(track);
+
+      if (!track.hls || hlsNatif()) {
+        // Paramètre anti-cache : on veut une vraie nouvelle requête, pas la
+        // réponse partielle que le navigateur a peut-être gardée.
+        els.audio.src = recharger ? `${url}?r=${Date.now()}` : url;
+        return;
+      }
+
+      const Hls = await chargerHlsJs();
+      if (currentTrack !== track) return;   // l'antenne a changé entre-temps
+
+      if (!Hls || !Hls.isSupported()) {
+        logPlayback('flux HLS illisible : hls.js indisponible');
+        els.status.textContent = 'Flux .m3u8 illisible — lancez « npm install » sur le serveur';
+        return;
+      }
+
+      // Le flux est en direct : on reste près du bord, sans chercher à
+      // rattraper tout ce qui a été mis en tampon.
+      hls = new Hls({ enableWorker: true, lowLatencyMode: false, liveSyncDurationCount: 3 });
+
+      hls.on(Hls.Events.ERROR, (evenement, donnees) => {
+        if (!donnees.fatal) return;
+        logPlayback('erreur HLS', { type: donnees.type, details: donnees.details });
+
+        // Coupure réseau ou média : hls.js sait souvent repartir seul.
+        if (donnees.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+        else if (donnees.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+        else relancerDirect('flux HLS interrompu');
+      });
+
+      hls.loadSource(url);
+      hls.attachMedia(els.audio);
+    }
+
     const els = {
       audio: document.getElementById('audioPlayer'),
       albumArtContent: document.getElementById('albumArtContent'),
@@ -951,9 +1097,36 @@
     let playlistPositioned = false;      // premier centrage effectue ?
     const AUTOSCROLL_PAUSE_MS = 10000;   // apres un defilement manuel
 
+    // Bandeau annoncant la musique d'attente : la file, elle, ne contient
+    // que les chansons des invites, et aucune n'est "en cours".
+    function banniereAttente(attente) {
+      if (!attente || !attente.playing) return '';
+
+      const direct = attente.mode === 'radio';
+      const titre = attente.track ? attente.track.title : (attente.label || 'Musique d\'attente');
+      const note = attente.handOver
+        ? 'Une chanson prend le relais à la fin de cette piste'
+        : (direct ? 'En attente de vos chansons' : 'Musique d\'attente — ' + (attente.label || ''));
+
+      return `
+        <div class="attente-banner">
+          ${direct ? '<span class="attente-live"></span>' : '<span>🎧</span>'}
+          <div>
+            <span class="attente-titre">${escapeHtml(titre)}</span>
+            <span class="attente-note">${escapeHtml(note)}</span>
+          </div>
+        </div>`;
+    }
+
     function renderPlaylist(data) {
+      const attente = data.fallback || {};
+      // Pendant l'attente, aucune chanson de la file n'est en cours
+      const courant = attente.playing ? -1 : data.currentIndex;
+
       const signature = JSON.stringify([
-        data.currentIndex,
+        courant,
+        attente.playing ? [attente.mode, attente.handOver,
+          attente.track ? attente.track.title : null] : null,
         data.playlist.map(t => [t.source, t.id, t.title, t.artist, t.duration, t.played, t.addedBy])
       ]);
 
@@ -961,10 +1134,10 @@
         playlistSignature = signature;
         const keepScroll = els.playlist.scrollTop;
 
-        els.playlist.innerHTML = data.playlist.map((track, idx) => `
-          <div class="playlist-item ${idx === data.currentIndex ? 'current' : ''} ${track.played ? 'played' : ''}"
+        els.playlist.innerHTML = banniereAttente(attente) + data.playlist.map((track, idx) => `
+          <div class="playlist-item ${idx === courant ? 'current' : ''} ${track.played ? 'played' : ''}"
                title="${track.title} - ${track.artist}">
-            <div class="item-title">${idx === data.currentIndex ? '<span class="eq"><i></i><i></i><i></i></span>' : ''}<span>${track.title}</span></div>
+            <div class="item-title">${idx === courant ? '<span class="eq"><i></i><i></i><i></i></span>' : ''}<span>${track.title}</span></div>
             <div class="item-row">
               <span class="item-meta">${track.artist} • ${formatTime(track.duration)}</span>
               <span class="item-added">Ajouté par: ${track.addedBy || 'Admin'}</span>
@@ -976,8 +1149,8 @@
       }
 
       // Changement de piste : on recentre meme si quelqu'un vient de faire defiler
-      const trackChanged = data.currentIndex !== lastCurrentIndex;
-      lastCurrentIndex = data.currentIndex;
+      const trackChanged = courant !== lastCurrentIndex;
+      lastCurrentIndex = courant;
       scrollPlaylistToCurrent(trackChanged);
 
       // La mise en page se stabilise juste apres (polices, pochette) : on
@@ -1030,26 +1203,41 @@
 
         renderPlaylist(data);
 
-        // Charger la piste actuelle
-		if (data.playlist[data.currentIndex]) {
-		  const track = data.playlist[data.currentIndex];
+        // Charger la piste actuelle. La musique d'attente passe en premier :
+        // quand le serveur la désigne, c'est elle qui tient l'antenne.
+        const attente = data.fallback || {};
 
-		  // Ne pas recharger la piste si elle est déjà en cours de lecture
-		  if (
-			!currentTrack ||
-			currentTrack.id !== track.id ||
-			currentTrack.source !== track.source ||
-			awaitingDownload
-		  ) {
-			loadTrack(data.currentIndex);
-		  } else if (currentTrack.lyricsState !== track.lyricsState) {
-			// Les paroles sont arrivées après le début de la lecture
-			currentTrack.lyrics = track.lyrics;
-			currentTrack.plainLyrics = track.plainLyrics;
-			currentTrack.lyricsState = track.lyricsState;
-			renderTrackLyrics(track);
-		  }
-		} else {
+        if (attente.playing && attente.track) {
+          chargerAttente(attente, data);
+        } else if (attente.playing) {
+          // Attente configurée mais pas encore prête (playlist en cours de
+          // chargement) : on ne touche à rien, elle arrive.
+          els.status.textContent = "Préparation de la musique d'attente...";
+        } else if (data.playlist[data.currentIndex]) {
+          const track = data.playlist[data.currentIndex];
+
+          // Ne pas recharger la piste si elle est déjà en cours de lecture
+          if (
+            enAttente ||
+            !currentTrack ||
+            currentTrack.id !== track.id ||
+            currentTrack.source !== track.source ||
+            awaitingDownload
+          ) {
+            loadTrack(data.currentIndex);
+          } else if (currentTrack.lyricsState !== track.lyricsState) {
+            // Les paroles sont arrivées après le début de la lecture
+            currentTrack.lyrics = track.lyrics;
+            currentTrack.plainLyrics = track.plainLyrics;
+            currentTrack.lyricsState = track.lyricsState;
+            renderTrackLyrics(track);
+          }
+        } else {
+          if (enAttente) {           // l'attente vient d'être coupée
+            enAttente = false;
+            currentTrack = null;
+            resetAudio();
+          }
           els.trackTitle.textContent = 'Playlist vide';
           els.trackArtist.textContent = 'Ajoutez des chansons pour commencer';
           els.status.textContent = 'En attente de chansons...';
@@ -1068,10 +1256,11 @@
 
     function syncWithServer(data) {
       if (!currentTrack || awaitingDownload || givenUp) return;
-      if (!els.audio.getAttribute('src')) return;
+      if (!fluxCharge()) return;
 
-      // Deplacement demande depuis l'admin : on se cale sur sa position
-      if (lastSeekSeq !== null && data.seekSeq !== lastSeekSeq) {
+      // Deplacement demande depuis l'admin : on se cale sur sa position.
+      // Un direct n'a pas de position : on le laisse couler.
+      if (lastSeekSeq !== null && data.seekSeq !== lastSeekSeq && !currentTrack.live) {
         const cible = data.playbackTime || 0;
         logPlayback(`position imposée par l'admin : ${Math.round(cible)} s`);
         if (els.audio.readyState > 0) {
@@ -1095,6 +1284,7 @@
     // un rafraichissement de cet ecran reprend au bon endroit.
     function reportPosition() {
       if (!currentTrack || awaitingDownload || els.audio.paused) return;
+      if (currentTrack.live) return;   // un direct n'a pas de position à retenir
       const position = engineCurrentTime();
       if (position > 0) reportPlayerEvent('position', { time: Math.round(position) });
     }
@@ -1104,13 +1294,19 @@
     // la piste est finie, elle est illisible, ou en voici la position.
     // Les commandes (lecture, pause, piste suivante) viennent de /admin.
     async function reportPlayerEvent(type, extra) {
-      if (!playbackState || typeof playbackState.currentIndex !== 'number') return null;
+      // La musique d'attente n'a pas de place dans la file : elle se
+      // signale par un drapeau plutôt que par un index.
+      const cible = enAttente
+        ? { fallback: true }
+        : { index: playbackState && playbackState.currentIndex };
+
+      if (!enAttente && typeof cible.index !== 'number') return null;
 
       try {
         const response = await fetch(`${API_BASE}/player/event`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type, index: playbackState.currentIndex, ...(extra || {}) })
+          body: JSON.stringify({ type, ...cible, ...(extra || {}) })
         });
         return await response.json();
       } catch (error) {
@@ -1127,9 +1323,18 @@
     }
 
     // ============= LECTURE =============
+    // Y a-t-il quelque chose de charge dans le lecteur ? Avec hls.js, le son
+    // n'arrive pas par une adresse : c'est la bibliotheque qui alimente
+    // l'element <audio>. Chercher un « src » ne suffit donc plus.
+    function fluxCharge() {
+      return Boolean(hls || els.audio.srcObject || els.audio.getAttribute('src'));
+    }
+
     function resetAudio() {
+      arreterHls();
       els.audio.pause();
       els.audio.removeAttribute('src');
+      try { els.audio.srcObject = null; } catch (error) { /* non supporte */ }
       els.audio.load();
     }
 
@@ -1162,7 +1367,64 @@
       enginePlay();
     });
 
+    // Titre, artiste, pochette, paroles : commun aux chansons et à l'attente
+    function afficherPiste(track) {
+      els.trackTitle.textContent = track.title;
+      els.trackArtist.textContent = track.artist;
+      els.duration.textContent = track.live ? 'en direct' : formatTime(track.duration);
+
+      // Pochette (masquée quand la vidéo prend la place)
+      if (track.coverArt) {
+        els.albumArtContent.innerHTML = `<img src="${track.coverArt}" alt="Album">`;
+        els.albumArt.classList.remove('no-cover');
+      } else {
+        els.albumArtContent.innerHTML = track.live ? '📻' : '🎵';
+        els.albumArt.classList.add('no-cover');
+      }
+
+      renderTrackLyrics(track);
+    }
+
+    // La musique d'attente prend l'antenne. Même mécanique qu'une chanson,
+    // sans index dans la file : le serveur la désigne, l'écran la joue.
+    function chargerAttente(attente, data) {
+      const piste = attente.track;
+
+      if (enAttente && cleSource(piste) === cleSource(currentTrack)) {
+        // Les paroles d'une piste d'attente arrivent après coup, elles aussi
+        if (currentTrack.lyricsState !== piste.lyricsState) {
+          currentTrack.lyrics = piste.lyrics;
+          currentTrack.plainLyrics = piste.plainLyrics;
+          currentTrack.lyricsState = piste.lyricsState;
+          renderTrackLyrics(piste);
+        }
+        return;
+      }
+
+      enAttente = true;
+      awaitingDownload = false;
+      echecsDirect = 0;
+      currentTrack = piste;
+
+      afficherPiste(piste);
+      els.sourceBadge.textContent = '';
+      els.sourceBadge.classList.remove('visible');
+
+      resetPlaybackWatch();
+      demarrerFonduEntree();
+      pendingSeek = null;              // un direct ne se reprend pas en cours de route
+      lancerFlux(piste).then(() => {
+        if (currentTrack === piste && data.isPlaying) enginePlay();
+      });
+
+      els.status.textContent = attente.mode === 'radio'
+        ? `🔴 ${attente.label} — en attente de vos chansons`
+        : `Musique d'attente — ${attente.label}`;
+    }
+
     async function loadTrack(index) {
+      enAttente = false;   // synchrone : le prochain rafraîchissement ne doit
+                           // pas relancer un chargement déjà en cours
       try {
         const response = await fetch(`${API_BASE}/playlist`);
         const data = await response.json();
@@ -1171,20 +1433,7 @@
         if (!track) return;
 
         currentTrack = track;
-        els.trackTitle.textContent = track.title;
-        els.trackArtist.textContent = track.artist;
-        els.duration.textContent = formatTime(track.duration);
-
-        // Pochette (masquée quand la vidéo prend la place)
-        if (track.coverArt) {
-          els.albumArtContent.innerHTML = `<img src="${track.coverArt}" alt="Album">`;
-          els.albumArt.classList.remove('no-cover');
-        } else {
-          els.albumArtContent.innerHTML = '🎵';
-          els.albumArt.classList.add('no-cover');
-        }
-
-        renderTrackLyrics(track);
+        afficherPiste(track);
 
         // Une piste Soulseek doit d'abord finir de se télécharger
         if (track.source === 'soulseek' && track.downloadStatus !== 'ready') {
@@ -1215,7 +1464,7 @@
         // navigateur : on memorise la position et on l'applique a l'evenement
         // loadedmetadata (voir plus bas).
         pendingSeek = data.playbackTime > 0 ? data.playbackTime : null;
-        els.audio.src = `/api/stream/${track.source}/${track.id}`;
+        await lancerFlux(track);
 
         if (data.isPlaying) {
           enginePlay();
@@ -1325,6 +1574,16 @@
     // Barre de progression et paroles : une seule horloge, quel que soit le moteur
     function updateProgress() {
       const current = engineCurrentTime();
+
+      // Un direct n'a pas de fin : la barre n'a rien à mesurer, on affiche
+      // seulement depuis combien de temps il tourne.
+      if (currentTrack && currentTrack.live) {
+        els.progressFill.style.width = '0%';
+        els.duration.textContent = 'en direct';
+        els.currentTime.textContent = formatTime(current);
+        return;
+      }
+
       const duration = engineDuration();
 
       if (duration > 0) {
@@ -1346,14 +1605,20 @@
       els.audio.volume = 0;
     }
 
+    // Un direct n'a pas de fin : le navigateur annonce pourtant une durée,
+    // celle de ce qu'il a déjà téléchargé. Comme la lecture colle au bord du
+    // flux, cette durée vaut toujours à peu près la position courante — le
+    // lecteur se croirait sans cesse à trois secondes de la fin et
+    // enchaînerait les fondus de sortie.
     function tempsRestant() {
+      if (currentTrack && currentTrack.live) return Infinity;
       const duree = els.audio.duration;
       if (!isFinite(duree) || duree <= 0) return Infinity;
       return duree - els.audio.currentTime;
     }
 
     function tickFondu() {
-      if (!currentTrack || awaitingDownload || !els.audio.getAttribute('src')) return;
+      if (!currentTrack || awaitingDownload || !fluxCharge()) return;
 
       const restant = tempsRestant();
 
@@ -1452,14 +1717,35 @@
       els.status.textContent = 'Reprise de la lecture...';
 
       const piste = currentTrack;
-      setTimeout(() => {
+      setTimeout(async () => {
         if (currentTrack !== piste) return;   // on a change de morceau entre-temps
         demarrerFonduEntree();
         pendingSeek = position;
-        // Parametre anti-cache : on veut une vraie nouvelle requete, pas la
-        // reponse partielle que le navigateur a peut-etre gardee.
-        els.audio.src = `/api/stream/${piste.source}/${piste.id}?r=${Date.now()}`;
-        els.audio.load();
+        await lancerFlux(piste, true);
+        if (currentTrack !== piste) return;
+        els.audio.play().catch(() => {});
+      }, attente);
+
+      return true;
+    }
+
+    // Un flux en direct n'a pas de fin : s'il s'arrête, c'est une coupure,
+    // pas la fin d'un morceau. On se rebranche, avec un délai qui s'allonge
+    // pour ne pas marteler une webradio en panne.
+    function relancerDirect(raison) {
+      if (!currentTrack || !currentTrack.live) return false;
+
+      echecsDirect++;
+      const attente = Math.min(15000, 2000 * echecsDirect);
+      logPlayback(`reconnexion à la webradio (${raison})`, { tentative: echecsDirect });
+      els.status.textContent = 'Reconnexion à la webradio…';
+
+      const piste = currentTrack;
+      setTimeout(async () => {
+        if (currentTrack !== piste) return;   // l'antenne a changé entre-temps
+        demarrerFonduEntree();
+        await lancerFlux(piste, true);
+        if (currentTrack !== piste) return;
         els.audio.play().catch(() => {});
       }, attente);
 
@@ -1476,6 +1762,7 @@
     els.audio.addEventListener('ended', () => {
       if (givenUp) return;          // saut de piste deja programme
       if (fadeOutDemande) return;   // le fondu de sortie a deja demande la suite
+      if (relancerDirect('flux terminé')) return;
       const position = engineCurrentTime();
       const reelle = els.audio.duration;
       const annoncee = currentTrack ? currentTrack.duration : 0;
@@ -1497,10 +1784,11 @@
     });
 
     els.audio.addEventListener('error', () => {
-      if (!currentTrack || givenUp || !els.audio.getAttribute('src')) return;
+      if (!currentTrack || givenUp || !fluxCharge()) return;
       const media = els.audio.error;
       logPlayback('erreur du lecteur audio', { code: media ? media.code : null });
 
+      if (relancerDirect('erreur de lecture')) return;
       if (!resumePlayback(engineCurrentTime(), 'erreur de lecture')) abandonnerLaPiste();
     });
 
@@ -1524,7 +1812,7 @@
     // Chien de garde : si la lecture devrait avancer et n'avance plus, on agit
     function watchPlayback() {
       if (!currentTrack || awaitingDownload || givenUp) return;
-      if (!els.audio.getAttribute('src')) return;
+      if (!fluxCharge()) return;
       if (!playbackState || !playbackState.isPlaying) return;   // pause demandée par l'admin
 
       const position = engineCurrentTime();
@@ -1536,6 +1824,7 @@
         lastProgressAt = now;
         recoveryCount = 0;
         recoveryPosition = null;
+        echecsDirect = 0;
         return;
       }
 
@@ -1563,6 +1852,7 @@
 
       // Le lecteur se croit en lecture mais le temps ne bouge plus :
       // le tampon est a sec, on recharge le flux a la bonne position.
+      if (relancerDirect('lecture figée')) return;
       if (!resumePlayback(position, 'lecture figée')) abandonnerLaPiste();
     }
 

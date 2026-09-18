@@ -1,7 +1,13 @@
 <!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════════════════
      Jukebox — page Admin
-     Version 1.1.0 — 12.09.2026
+     Version 1.2.1 — 18.09.2026
+       1.2.1  La webradio accepte les flux .m3u8 (HLS), reconnus tout
+              seuls a l'enregistrement de l'adresse.
+       1.2.0  Panneau « Musique d'attente » : webradio ou playlist
+              Navidrome jouée quand plus aucune chanson n'attend son
+              tour. La webradio est coupée dès qu'une chanson arrive,
+              une piste de playlist va jusqu'au bout.
        1.1.0  Le bouton « + Ajouter » des résultats de recherche
               répond au doigt sur téléphone (clavier, cible de tap,
               défilement imbriqué, geste de bord).
@@ -805,6 +811,87 @@
       font-size: 11px;
     }
 
+    /* ── Musique d'attente ────────────────────────────────────── */
+    /* Mêmes champs que les quotas, mais du texte et une liste */
+    .settings-box input[type="text"],
+    .settings-box input[type="url"],
+    .settings-box select {
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: 10px;
+      font-size: 12px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: #fff;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+
+    .settings-box input[type="text"]:focus,
+    .settings-box input[type="url"]:focus,
+    .settings-box select:focus {
+      border-color: rgba(0, 229, 255, 0.55);
+      box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.12);
+    }
+
+    /* La liste déroulante est rendue par le système : ses options doivent
+       rester lisibles, le fond du panneau étant transparent. */
+    .settings-box select option {
+      background: #16162a;
+      color: #fff;
+    }
+
+    /* Les champs d'un mode non retenu n'ont rien à faire à l'écran */
+    .attente-champs {
+      display: none;
+      margin-top: 4px;
+    }
+
+    .attente-champs.visible {
+      display: block;
+    }
+
+    .attente-etat {
+      margin-top: 10px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 10px;
+      line-height: 1.5;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .attente-etat.en-cours {
+      background: rgba(0, 229, 255, 0.1);
+      border-color: rgba(0, 229, 255, 0.3);
+      color: rgba(255, 255, 255, 0.78);
+    }
+
+    .attente-etat.erreur {
+      background: rgba(255, 92, 122, 0.1);
+      border-color: rgba(255, 92, 122, 0.35);
+      color: #ffb3c1;
+    }
+
+    .attente-etat b {
+      color: var(--neon);
+    }
+
+    .settings-box label.attente-case {
+      justify-content: flex-start;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .attente-case input {
+      accent-color: var(--neon);
+      width: 15px;
+      height: 15px;
+      flex: none;
+      cursor: pointer;
+    }
+
     /* Réglages qui ne dépendent pas des invités : mis à part */
     .quotas-autres {
       margin-top: 14px;
@@ -1159,6 +1246,48 @@
         </div>
       </div>
 
+      <!-- Ce qui joue quand plus aucune chanson n'attend son tour -->
+      <div class="status-box settings-box" id="attenteBox">
+        <div class="reco-head">
+          <strong>Musique d'attente</strong>
+          <span class="reco-base" id="attenteResume">—</span>
+        </div>
+
+        <div class="reco-modes" id="attenteModes">
+          <button type="button" class="reco-mode active" data-mode="off">Aucune<span>silence</span></button>
+          <button type="button" class="reco-mode" data-mode="radio">Webradio<span>coupée net</span></button>
+          <button type="button" class="reco-mode" data-mode="playlist">Playlist<span>va au bout</span></button>
+        </div>
+
+        <div class="attente-champs" id="attenteRadio">
+          <label for="attenteUrl">Adresse du flux (mp3, aac, ogg ou .m3u8)</label>
+          <input type="text" id="attenteUrl" autocomplete="off" spellcheck="false"
+                 placeholder="https://exemple.net/stream.mp3">
+
+          <label for="attenteNom">Nom affiché (facultatif)</label>
+          <input type="text" id="attenteNom" maxlength="60" autocomplete="off"
+                 placeholder="Webradio">
+        </div>
+
+        <div class="attente-champs" id="attentePlaylist">
+          <label for="attenteListe">Playlist Navidrome</label>
+          <select id="attenteListe"><option value="">Chargement…</option></select>
+
+          <label class="attente-case">
+            <input type="checkbox" id="attenteAleatoire">
+            <span>Lecture aléatoire</span>
+          </label>
+        </div>
+
+        <div class="quotas-actions">
+          <button class="secondary" id="attenteTest" onclick="testerAttente()">Tester</button>
+          <button onclick="enregistrerAttente()">Appliquer</button>
+        </div>
+
+        <div id="attenteMsg" style="margin-top: 8px; font-size: 11px;"></div>
+        <div class="attente-etat" id="attenteEtat">Désactivée : le jukebox reste silencieux entre deux chansons.</div>
+      </div>
+
       <div class="status-box">
         <div><strong>Infos Serveur</strong></div>
         <div id="serverStatus" style="margin-top: 8px; font-size: 11px;">
@@ -1301,10 +1430,12 @@
       loadPlaylist();
       loadUsers();
       loadSettings();
+      chargerAttente();
       updateServerStatus();
       stopTimers();
       timers.push(setInterval(loadPlaylist, 2000));
       timers.push(setInterval(loadUsers, 5000));
+      timers.push(setInterval(chargerAttente, 5000));
       timers.push(setInterval(updateServerStatus, 10000));
       timers.push(setInterval(tickCooldowns, 1000));
       timers.push(setInterval(verifierAutoQuotas, 15000));
@@ -1613,6 +1744,259 @@
         }
       }
     }
+
+    // ============= MUSIQUE D'ATTENTE =============
+    // Ce que le jukebox joue quand plus aucune chanson n'attend son tour :
+    // une webradio (coupée dès qu'une chanson arrive) ou une playlist
+    // Navidrome (dont la piste en cours va jusqu'au bout).
+    let attenteMode = 'off';
+    let attenteDirty = false;        // saisie en cours : ne pas l'écraser
+    let playlistsDemandees = false;
+
+    // Un message chasse le précédent — y compris l'effacement que celui-ci
+    // avait programmé, sinon il emporterait le nouveau avec lui.
+    let effacementAttente = null;
+
+    function messageAttente(texte, erreur) {
+      const el = document.getElementById('attenteMsg');
+      clearTimeout(effacementAttente);
+      el.style.color = erreur ? '#ff5c7a' : '#34d399';
+      el.textContent = texte;
+      if (texte && !erreur) {
+        effacementAttente = setTimeout(() => { el.textContent = ''; }, 4000);
+      }
+    }
+
+    // Seuls les champs du mode retenu sont montrés
+    function majAffichageAttente() {
+      document.querySelectorAll('#attenteModes .reco-mode').forEach(b =>
+        b.classList.toggle('active', b.dataset.mode === attenteMode));
+
+      document.getElementById('attenteRadio')
+        .classList.toggle('visible', attenteMode === 'radio');
+      document.getElementById('attentePlaylist')
+        .classList.toggle('visible', attenteMode === 'playlist');
+
+      const test = document.getElementById('attenteTest');
+      test.disabled = attenteMode === 'off';
+      test.textContent = attenteMode === 'playlist' ? 'Recharger' : 'Tester';
+
+      // La liste des playlists n'est demandée qu'au premier besoin
+      if (attenteMode === 'playlist' && !playlistsDemandees) chargerPlaylistsNavidrome();
+    }
+
+    async function chargerPlaylistsNavidrome(force) {
+      const select = document.getElementById('attenteListe');
+      if (playlistsDemandees && !force) return;
+      playlistsDemandees = true;
+
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/fallback/playlists`);
+        const data = await response.json();
+
+        if (!response.ok) {
+          select.innerHTML = `<option value="">${escapeHtml(data.error || 'Indisponible')}</option>`;
+          playlistsDemandees = false;   // un nouvel essai reste possible
+          return;
+        }
+
+        const choisie = document.getElementById('attenteListe').dataset.choisie || '';
+        select.innerHTML = '<option value="">— Choisir une playlist —</option>'
+          + data.playlists.map(p => `
+              <option value="${escapeHtml(p.id)}" ${p.id === choisie ? 'selected' : ''}>
+                ${escapeHtml(p.name)} (${p.songCount} pistes)
+              </option>`).join('');
+
+        if (!data.playlists.length) {
+          select.innerHTML = '<option value="">Aucune playlist dans Navidrome</option>';
+        }
+      } catch (error) {
+        if (error.message !== 'unauthorized') {
+          select.innerHTML = '<option value="">Navidrome injoignable</option>';
+          playlistsDemandees = false;
+        }
+      }
+    }
+
+    // Une phrase qui dit ce qui joue, ou ce qui jouera au prochain silence
+    function afficherEtatAttente(data) {
+      const etat = document.getElementById('attenteEtat');
+      const resume = document.getElementById('attenteResume');
+      const s = data.status || {};
+
+      resume.textContent = data.mode === 'off' ? 'désactivée'
+        : data.mode === 'radio' ? (data.radioName || 'webradio') + (data.radioHls ? ' · HLS' : '')
+        : (data.playlistName || 'playlist') + (s.queueLength ? ` — ${s.queueLength} pistes` : '');
+
+      etat.classList.remove('en-cours', 'erreur');
+
+      if (s.error) {
+        etat.classList.add('erreur');
+        etat.textContent = `⚠ ${s.error}`;
+        return;
+      }
+
+      if (data.mode === 'off') {
+        etat.textContent = 'Désactivée : le jukebox reste silencieux entre deux chansons.';
+        return;
+      }
+
+      if (!data.configured) {
+        etat.classList.add('erreur');
+        etat.textContent = data.mode === 'playlist' && !data.navidrome
+          ? '⚠ Navidrome est désactivé dans le .env : la playlist ne peut pas être lue.'
+          : '⚠ Réglage incomplet : renseignez le champ ci-dessus puis appliquez.';
+        return;
+      }
+
+      // Flux HLS sans hls.js : il ne sortira que sur Safari
+      if (data.mode === 'radio' && data.radioHls && !data.hlsDisponible) {
+        etat.classList.add('erreur');
+        etat.textContent = '⚠ Flux .m3u8 : hls.js est absent du serveur.'
+          + ' Lancez « npm install », sinon seul Safari pourra le lire.';
+        return;
+      }
+
+      if (s.playing) {
+        etat.classList.add('en-cours');
+        const piste = s.title ? `<b>${escapeHtml(s.title)}</b>` : 'en cours';
+        const position = data.mode === 'playlist' && s.queueLength
+          ? ` (${s.position}/${s.queueLength})` : '';
+        etat.innerHTML = `▶ ${piste}${position}`
+          + (s.handOver ? '<br>Une chanson prend le relais à la fin de cette piste.' : '');
+        return;
+      }
+
+      etat.textContent = data.mode === 'radio'
+        ? 'Prête : elle démarrera dès que la file sera vide, et se coupera net à la première chanson.'
+        : 'Prête : elle démarrera dès que la file sera vide. Une chanson ajoutée attendra la fin de la piste en cours.';
+    }
+
+    async function chargerAttente() {
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/fallback`);
+        const data = await response.json();
+
+        // Une saisie en cours ne doit pas être écrasée par le rafraîchissement
+        if (!attenteDirty) {
+          attenteMode = data.mode;
+          document.getElementById('attenteUrl').value = data.radioUrl || '';
+          document.getElementById('attenteNom').value = data.radioName || '';
+          document.getElementById('attenteAleatoire').checked = Boolean(data.shuffle);
+
+          const select = document.getElementById('attenteListe');
+          select.dataset.choisie = data.playlistId || '';
+          if (select.querySelector(`option[value="${CSS.escape(data.playlistId || '')}"]`)) {
+            select.value = data.playlistId || '';
+          }
+          majAffichageAttente();
+        }
+
+        afficherEtatAttente(data);
+      } catch (error) {
+        if (error.message !== 'unauthorized') console.error('Attente : lecture impossible', error);
+      }
+    }
+
+    async function enregistrerAttente() {
+      const corps = {
+        mode: attenteMode,
+        radioUrl: document.getElementById('attenteUrl').value.trim(),
+        radioName: document.getElementById('attenteNom').value.trim(),
+        playlistId: document.getElementById('attenteListe').value,
+        shuffle: document.getElementById('attenteAleatoire').checked
+      };
+
+      // Le nom de la playlist sert aux écrans : on l'envoie avec son identifiant
+      const option = document.getElementById('attenteListe').selectedOptions[0];
+      if (corps.mode === 'playlist' && option) corps.playlistName = option.textContent.trim();
+
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/fallback`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(corps)
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+          messageAttente(data.error || 'Erreur', true);
+          return;
+        }
+
+        attenteDirty = false;
+        messageAttente(data.mode === 'off' ? '✓ Musique d\'attente désactivée'
+          : data.mode === 'radio' ? `✓ Webradio « ${data.radioName || data.radioUrl} »`
+          : `✓ Playlist « ${data.playlistName} »${data.shuffle ? ' (aléatoire)' : ''}`);
+
+        afficherEtatAttente(data);
+        loadPlaylist();
+      } catch (error) {
+        if (error.message !== 'unauthorized') messageAttente('Erreur lors de l\'enregistrement', true);
+      }
+    }
+
+    // Vérifie que l'adresse saisie renvoie bien du son — une page web
+    // répond « 200 » tout aussi volontiers, mais ne se joue pas.
+    async function testerAttente() {
+      if (attenteMode === 'playlist') {
+        messageAttente('Rechargement des playlists…');
+        await chargerPlaylistsNavidrome(true);
+        return;
+      }
+
+      const bouton = document.getElementById('attenteTest');
+      const url = document.getElementById('attenteUrl').value.trim();
+      bouton.disabled = true;
+      messageAttente('Test du flux…');
+
+      try {
+        const response = await adminFetch(`${API_BASE}/admin/fallback/test`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const data = await response.json();
+
+        if (!response.ok) { messageAttente(data.error || 'Flux injoignable', true); return; }
+
+        // Un .m3u8 se lit avec hls.js, servi par le jukebox : sans lui, seul
+        // Safari saurait le jouer. Autant le signaler avant la soirée.
+        if (data.hls && !data.hlsPret) {
+          messageAttente('⚠ Flux HLS reconnu, mais hls.js est absent : lancez'
+            + ' « npm install » sur le serveur, sinon seul Safari pourra le lire.', true);
+          return;
+        }
+
+        messageAttente(`✓ Flux valide (${data.hls ? 'HLS .m3u8' : data.contentType})`);
+        // Le serveur annonce souvent son nom : autant s'en servir
+        const nom = document.getElementById('attenteNom');
+        if (data.name && !nom.value.trim()) { nom.value = data.name; attenteDirty = true; }
+      } catch (error) {
+        if (error.message !== 'unauthorized') messageAttente('Test impossible', true);
+      } finally {
+        bouton.disabled = attenteMode === 'off';
+      }
+    }
+
+    // Choix du mode + suivi des saisies
+    (function () {
+      const modes = document.getElementById('attenteModes');
+      if (!modes) return;
+
+      modes.addEventListener('click', (event) => {
+        const bouton = event.target.closest('.reco-mode');
+        if (!bouton) return;
+        attenteMode = bouton.dataset.mode;
+        attenteDirty = true;
+        majAffichageAttente();
+      });
+
+      ['attenteUrl', 'attenteNom', 'attenteListe', 'attenteAleatoire'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', () => { attenteDirty = true; });
+      });
+    })();
 
     async function addUser() {
       const input = document.getElementById('newUserName');
@@ -2524,7 +2908,7 @@
 
     function majAffichageAuto() {
       const etat = document.getElementById('recoAutoEtat');
-      const boite = document.querySelector('.settings-box');
+      const boite = document.getElementById('quotasBox');
       const bouton = document.getElementById('recoApply');
       const champs = ['setMaxSongs', 'setCooldown', 'setWindow']
         .map(id => document.getElementById(id));
@@ -2664,7 +3048,9 @@
       const cibleMemorisee = Number(localStorage.getItem('jukeboxRecoCible'));
       if ([20, 45, 90].includes(cibleMemorisee)) {
         recoCible = cibleMemorisee;
-        document.querySelectorAll('.reco-mode').forEach(b =>
+        // Bien cibler les boutons des quotas : la musique d'attente
+        // utilise les mêmes styles, pas les mêmes valeurs.
+        document.querySelectorAll('#recoModes .reco-mode').forEach(b =>
           b.classList.toggle('active', Number(b.dataset.cible) === cibleMemorisee));
       }
 

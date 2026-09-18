@@ -109,10 +109,42 @@ Stricte : `1` et `15`.
 | `SOULSEEK_DELETE_AFTER_PLAY` | `true` | Supprime le fichier en fin de morceau |
 | `SOULSEEK_RATE_LIMIT` | `30` | Recherches max par fenêtre (Soulseek bannit 30 min au-delà d'environ 34 / 220 s) |
 
+### Musique d'attente
+
+Ce que le jukebox joue quand plus aucune chanson d'invité n'attend son tour.
+Tout se règle depuis `/admin` (panneau **Musique d'attente**) ; les variables
+ci-dessous ne servent qu'au premier démarrage.
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `FALLBACK_MODE` 🔥 | `off` | `off`, `radio` ou `playlist` |
+| `FALLBACK_RADIO_URL` 🔥 | — | Adresse du **flux** (pas du site de la radio) — mp3, aac, ogg ou `.m3u8` |
+| `FALLBACK_RADIO_HLS` 🔥 | `false` | Forcer le mode HLS si la détection automatique se trompe |
+| `FALLBACK_RADIO_NAME` 🔥 | — | Nom affiché sur l'écran de lecture |
+| `FALLBACK_PLAYLIST_ID` 🔥 | — | Playlist Navidrome (la liste déroulante admin le remplit) |
+| `FALLBACK_SHUFFLE` 🔥 | `false` | Lire la playlist dans le désordre |
+| `FALLBACK_STORE` | `./fallback.json` | Fichier où les choix faits depuis `/admin` sont conservés |
+
+Deux comportements, selon ce qui est choisi :
+
+- **Webradio** — coupée **sur-le-champ** dès qu'une chanson est ajoutée. Le flux
+  passe par le jukebox : une seule adresse à joindre, et le visualiseur de
+  l'écran de lecture continue de fonctionner. Les flux `mp3`, `aac`, `ogg` et
+  **HLS (`.m3u8`)** sont acceptés ; la nature du flux est reconnue toute seule
+  à l'enregistrement de l'adresse. Le HLS est lu par
+  [hls.js](https://github.com/video-dev/hls.js), installé par `npm install` et
+  servi par le jukebox — l'écran de lecture n'a donc pas besoin d'Internet.
+- **Playlist Navidrome** — la piste en cours **va jusqu'au bout**, la chanson
+  ajoutée démarre juste après. Les pistes s'enchaînent en boucle, avec leurs
+  paroles et le fondu habituel.
+
+Quand l'attente tient l'antenne, `⏭` et `⏮` font défiler ses pistes, et un
+bandeau l'annonce en tête de la file sur l'écran de lecture.
+
 ## Utilisation
 
 **Admin** — `/admin`, mot de passe, ajouter les invités (colonne de droite),
-copier le lien invité, piloter la lecture.
+copier le lien invité, piloter la lecture, choisir la musique d'attente.
 
 **Invité** — `/guest` ou QR code, saisir le code reçu, chercher, « Ajouter ».
 Sans code valide : 403. Code insensible à la casse et aux espaces,

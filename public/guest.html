@@ -1333,7 +1333,9 @@
         // Une chanson deja passee ou en cours de lecture ne se retire plus :
         // elle a eu son tour, elle reste comptee dans le quota.
         el.innerHTML = mine.map(({ track, index }) => {
-          const enLecture = index === data.currentIndex;
+          // Pendant la musique d'attente, aucune chanson de la file ne joue
+          const enLecture = index === data.currentIndex
+            && !(data.fallback && data.fallback.playing);
           const retirable = !track.played && !enLecture;
           const action = retirable
             ? `<button class="song-remove" data-song="${escapeHtml(String(track.id))}"

@@ -1,6 +1,16 @@
 // ============================================================
 //  Jukebox — serveur
-//  Version : 1.1.0 (2026-09-09)
+//  Version : 1.2.1 (2026-09-18)
+//    1.2.1 — Webradio : prise en charge des flux HLS (.m3u8). La liste
+//            des segments est relayee et reecrite par le jukebox, le
+//            navigateur ne joint qu'une seule origine. hls.js est servi
+//            depuis les dependances du projet (/vendor/hls.js).
+//    1.2.0 — Musique d'attente : quand plus aucune chanson d'invité
+//            n'attend son tour, le jukebox joue une webradio ou une
+//            playlist Navidrome, choisie depuis le panneau admin.
+//            Une chanson ajoutée coupe la webradio sur-le-champ ;
+//            en mode playlist, elle attend la fin de la piste en cours.
+//            Nouvelles routes /api/admin/fallback, /api/stream/radio.
 //    1.1.0 — Retrait d'une chanson : l'invité récupère son crédit
 //            (place dans le quota + délai d'ajout remis à zéro), que le
 //            retrait vienne de l'organisateur ou de l'invité lui-même.
@@ -80,6 +90,26 @@ const CONFIG = {
     version: null
   },
 
+  // Musique d'attente : ce qui joue quand plus aucune chanson d'invité
+  // n'attend son tour. Réglée depuis le panneau admin ; ces valeurs ne
+  // sont que le point de départ au premier démarrage.
+  //   mode 'off'      : silence, comportement d'origine
+  //   mode 'radio'    : flux webradio, coupé net dès qu'une chanson arrive
+  //   mode 'playlist' : playlist Navidrome, la piste en cours va au bout
+  fallback: {
+    mode: ['off', 'radio', 'playlist'].includes(process.env.FALLBACK_MODE)
+      ? process.env.FALLBACK_MODE : 'off',
+    radioUrl: process.env.FALLBACK_RADIO_URL || '',
+    radioName: process.env.FALLBACK_RADIO_NAME || '',
+    // Flux HLS (.m3u8) : une liste de segments, pas du son. Le lecteur doit
+    // le savoir pour passer par hls.js au lieu de le donner tel quel à
+    // <audio>. Renseigné tout seul à l'enregistrement de l'adresse.
+    radioHls: process.env.FALLBACK_RADIO_HLS === 'true',
+    playlistId: process.env.FALLBACK_PLAYLIST_ID || '',
+    playlistName: '',
+    shuffle: process.env.FALLBACK_SHUFFLE === 'true'
+  },
+
   // Jukebox settings
   // Fondu entre deux chansons, en secondes. 0 = enchaînement sec.
   // Le morceau sortant baisse sur cette durée, le suivant monte sur la même.
@@ -104,6 +134,22 @@ const state = {
   // n'applique une position que lorsque ce compteur change.
   seekSeq: 0,
   trackStartedAt: 0,
+  // Une chanson d'invité est la source en cours (par opposition a la
+  // musique d'attente, qui prend le relais quand la file est a sec).
+  guestActive: false,
+  // Pause demandee par l'organisateur : elle fige tout, y compris l'attente.
+  adminPaused: false,
+  // Musique d'attente. `track` est la piste qu'elle joue en ce moment,
+  // `handOver` signale qu'une chanson attend la fin de cette piste.
+  fallback: {
+    playing: false,
+    track: null,
+    queue: [],        // pistes de la playlist Navidrome d'attente
+    index: 0,
+    loadedFrom: null, // identifiant de la playlist actuellement chargee
+    handOver: false,
+    error: null
+  },
   sessionId: crypto.randomBytes(8).toString('hex')
 };
 
@@ -341,61 +387,97 @@ function requireAdmin(req, res, next) {
 }
 
 // ============= NAVIDROME / SUBSONIC API =============
+// Subsonic s'authentifie à chaque requête : un sel tiré au sort et le
+// md5 du mot de passe salé. Les jetons n'expirent pas, on peut donc les
+// coller dans une URL de flux ou de pochette.
+function navidromeAuth() {
+  const salt = crypto.randomBytes(8).toString('hex');
+  const token = crypto.createHash('md5')
+    .update(CONFIG.navidrome.password + salt)
+    .digest('hex');
+
+  return {
+    u: CONFIG.navidrome.username,
+    t: token,
+    s: salt,
+    v: '1.12.0',
+    c: 'jukebox'
+  };
+}
+
+// Appel d'une méthode de l'API. Lève une erreur parlante plutôt que de
+// renvoyer un objet vide : l'organisateur doit savoir ce qui cloche.
+async function navidromeCall(endpoint, params) {
+  if (!CONFIG.navidrome.enabled) throw new Error('Navidrome est désactivé');
+
+  const auth = navidromeAuth();
+  const response = await axios.get(`${CONFIG.navidrome.url}/rest/${endpoint}`, {
+    params: Object.assign({}, auth, params, { f: 'json' }),
+    timeout: 15000
+  });
+
+  const body = response.data && response.data['subsonic-response'];
+  if (!body) throw new Error('réponse Navidrome illisible');
+  if (body.status === 'failed') {
+    throw new Error((body.error && body.error.message) || 'Navidrome a refusé la requête');
+  }
+
+  return { body, auth };
+}
+
+// Fiche d'un morceau, telle que la manipule le jukebox
+function navidromeSong(song, auth) {
+  const jeton = new URLSearchParams(auth).toString();
+
+  return {
+    source: 'navidrome',
+    id: song.id,
+    title: song.title,
+    artist: song.artist,
+    album: song.album,
+    duration: song.duration,
+    coverArt: song.coverArt
+      ? `${CONFIG.navidrome.url}/rest/getCoverArt?id=${song.coverArt}&${jeton}`
+      : null,
+    streamUrl: `${CONFIG.navidrome.url}/rest/stream?id=${song.id}&${jeton}`
+  };
+}
+
 async function searchNavidrome(query) {
   if (!CONFIG.navidrome.enabled) return [];
 
   try {
-    const salt = crypto.randomBytes(8).toString('hex');
-
-    const hash = crypto.createHash('md5')
-      .update(CONFIG.navidrome.password + salt)
-      .digest('hex');
-
-    const response = await axios.get(
-      `${CONFIG.navidrome.url}/rest/search3`,
-      {
-        params: {
-          u: CONFIG.navidrome.username,
-          t: hash,
-          s: salt,
-          v: '1.12.0',
-          c: 'jukebox',
-          query: query,
-          f: 'json'
-        }
-      }
-    );
-
-    const searchResult =
-      response.data['subsonic-response']?.['searchResult3'];
-
-    if (searchResult?.song) {
-      return searchResult.song.map(song => ({
-        source: 'navidrome',
-        id: song.id,
-        title: song.title,
-        artist: song.artist,
-        album: song.album,
-        duration: song.duration,
-
-        coverArt: song.coverArt
-          ? `${CONFIG.navidrome.url}/rest/getCoverArt?id=${song.coverArt}&u=${CONFIG.navidrome.username}&t=${hash}&s=${salt}&v=1.12.0&c=jukebox`
-          : null,
-
-        streamUrl:
-          `${CONFIG.navidrome.url}/rest/stream?id=${song.id}` +
-          `&u=${CONFIG.navidrome.username}` +
-          `&t=${hash}&s=${salt}&v=1.12.0&c=jukebox`,
-
-        metadata: song
-      }));
-    }
-
+    const { body, auth } = await navidromeCall('search3', { query });
+    const songs = (body.searchResult3 && body.searchResult3.song) || [];
+    return songs.map(song =>
+      Object.assign(navidromeSong(song, auth), { metadata: song }));
   } catch (error) {
     console.error('Navidrome search error:', error.message);
+    return [];
   }
+}
 
-  return [];
+// Playlists de la bibliothèque, pour le choix de la musique d'attente
+async function navidromePlaylists() {
+  const { body } = await navidromeCall('getPlaylists');
+  const list = (body.playlists && body.playlists.playlist) || [];
+  return list.map(p => ({
+    id: String(p.id),
+    name: p.name,
+    songCount: p.songCount || 0,
+    duration: p.duration || 0
+  }));
+}
+
+// Contenu d'une playlist
+async function navidromePlaylist(id) {
+  const { body, auth } = await navidromeCall('getPlaylist', { id });
+  if (!body.playlist) throw new Error('Playlist introuvable');
+
+  return {
+    name: body.playlist.name || 'Playlist',
+    songs: (body.playlist.entry || []).map(song => navidromeSong(song, auth))
+  };
 }
 
 // ============= SOULSEEK (repli quand Navidrome ne trouve rien) =============
@@ -1066,6 +1148,11 @@ function removePlaylistIndex(index) {
     state.currentTrackIndex = Math.max(0, state.playlist.length - 1);
   }
 
+  // File vidée : plus aucune chanson d'invité ne joue, la musique
+  // d'attente peut reprendre la main.
+  if (!state.playlist.length) state.guestActive = false;
+  majAttente();
+
   return removed;
 }
 
@@ -1320,6 +1407,274 @@ function lyricsCredit(match) {
   return [match.artistName, match.trackName].filter(Boolean).join(' — ') || 'LRCLIB';
 }
 
+// ============= MUSIQUE D'ATTENTE =============
+// Elle occupe le silence quand plus aucune chanson d'invité n'attend son
+// tour : une webradio, ou une playlist Navidrome. Dès qu'une chanson est
+// ajoutée, la webradio est coupée net ; une piste de playlist, elle, va
+// au bout — sinon on couperait une chanson en plein milieu pour rien.
+//
+// Le serveur ne joue rien lui-même : il désigne la piste à jouer, l'écran
+// de lecture la joue et rend compte de sa fin, comme pour la playlist.
+
+const FALLBACK_STORE = process.env.FALLBACK_STORE
+  || path.join(__dirname, 'fallback.json');
+
+// Les réglages doivent survivre à un redémarrage : sans cela, l'organisateur
+// ressaisirait l'adresse de sa webradio à chaque relance.
+function chargerReglagesAttente() {
+  let brut;
+  try {
+    brut = JSON.parse(fs.readFileSync(FALLBACK_STORE, 'utf8'));
+  } catch (error) {
+    return;   // absent ou illisible : on garde les valeurs du .env
+  }
+
+  const f = CONFIG.fallback;
+  if (['off', 'radio', 'playlist'].includes(brut.mode)) f.mode = brut.mode;
+  if (typeof brut.radioUrl === 'string') f.radioUrl = brut.radioUrl;
+  if (typeof brut.radioName === 'string') f.radioName = brut.radioName;
+  if (typeof brut.radioHls === 'boolean') f.radioHls = brut.radioHls;
+  if (typeof brut.playlistId === 'string') f.playlistId = brut.playlistId;
+  if (typeof brut.playlistName === 'string') f.playlistName = brut.playlistName;
+  f.shuffle = Boolean(brut.shuffle);
+}
+
+function enregistrerReglagesAttente() {
+  const f = CONFIG.fallback;
+  try {
+    fs.writeFileSync(FALLBACK_STORE, JSON.stringify({
+      mode: f.mode,
+      radioUrl: f.radioUrl,
+      radioName: f.radioName,
+      radioHls: f.radioHls,
+      playlistId: f.playlistId,
+      playlistName: f.playlistName,
+      shuffle: f.shuffle
+    }, null, 2));
+  } catch (error) {
+    // Dossier en lecture seule (conteneur) : les réglages restent valables
+    // pour cette soirée, ils repartiront du .env au prochain démarrage.
+    console.error('Attente : réglages non enregistrés —', error.message);
+  }
+}
+
+// Une attente mal configurée ne doit pas laisser le lecteur tourner à vide
+function attenteConfiguree() {
+  const f = CONFIG.fallback;
+  if (f.mode === 'radio') return Boolean(f.radioUrl);
+  if (f.mode === 'playlist') return Boolean(f.playlistId) && CONFIG.navidrome.enabled;
+  return false;
+}
+
+// Première chanson d'invité qui n'a pas encore commencé, -1 s'il n'y en a plus
+function prochaineChanson() {
+  return state.playlist.findIndex(track => !track.played);
+}
+
+function melanger(liste) {
+  const copie = liste.slice();
+  for (let i = copie.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copie[i], copie[j]] = [copie[j], copie[i]];
+  }
+  return copie;
+}
+
+// La webradio n'est pas une piste : pas de durée, pas de fin annoncée.
+function pisteRadio() {
+  return {
+    source: 'radio',
+    id: 'radio',
+    title: CONFIG.fallback.radioName || 'Webradio',
+    artist: "Musique d'attente",
+    duration: 0,
+    live: true,
+    hls: Boolean(CONFIG.fallback.radioHls),
+    coverArt: null,
+    lyricsState: 'none'
+  };
+}
+
+// Chargement de la playlist d'attente. Jamais attendu par l'appelant : le
+// lecteur interroge /api/playlist toutes les 2 s, il prendra la file dès
+// qu'elle sera là.
+let chargementAttente = null;
+let prochainEssaiAttente = 0;
+const ATTENTE_DELAI_REESSAI_MS = 30000;
+
+function chargerFileAttente() {
+  const f = CONFIG.fallback;
+  const fb = state.fallback;
+
+  if (fb.loadedFrom === f.playlistId && fb.queue.length) return chargementAttente;
+  if (chargementAttente) return chargementAttente;
+  // Navidrome injoignable : trois écrans interrogent le jukebox toutes les
+  // 2 s, inutile de le harceler pour autant.
+  if (Date.now() < prochainEssaiAttente) return null;
+
+  chargementAttente = navidromePlaylist(f.playlistId)
+    .then(({ name, songs }) => {
+      f.playlistName = name;
+      fb.queue = f.shuffle ? melanger(songs) : songs;
+      fb.index = 0;
+      fb.loadedFrom = f.playlistId;
+      fb.error = songs.length ? null : 'Cette playlist est vide';
+      prochainEssaiAttente = songs.length ? 0 : Date.now() + ATTENTE_DELAI_REESSAI_MS;
+      console.log(`Attente : playlist « ${name} » chargée (${songs.length} pistes)`);
+    })
+    .catch(error => {
+      fb.queue = [];
+      fb.loadedFrom = null;
+      fb.error = error.message;
+      prochainEssaiAttente = Date.now() + ATTENTE_DELAI_REESSAI_MS;
+      console.error('Attente : playlist indisponible —', error.message);
+    })
+    .finally(() => { chargementAttente = null; });
+
+  return chargementAttente;
+}
+
+// Désigne la piste que l'attente doit jouer maintenant
+function alimenterAttente() {
+  const fb = state.fallback;
+
+  if (CONFIG.fallback.mode === 'radio') {
+    fb.error = null;
+    if (!fb.track || fb.track.source !== 'radio') fb.track = pisteRadio();
+    else fb.track.title = CONFIG.fallback.radioName || 'Webradio';
+    return;
+  }
+
+  if (fb.loadedFrom !== CONFIG.fallback.playlistId || !fb.queue.length) {
+    chargerFileAttente();
+  }
+
+  const suivante = fb.queue[fb.index] || null;
+  if (suivante && (!fb.track || fb.track.id !== suivante.id)) {
+    fb.track = suivante;
+    // Les paroles défilent aussi pendant l'attente : même écran, même soin.
+    if (!suivante.lyricsState) {
+      suivante.lyricsState = 'pending';
+      fetchLyricsFor(suivante);
+    }
+  } else if (!suivante) {
+    fb.track = null;
+  }
+}
+
+function arreterAttente() {
+  const fb = state.fallback;
+  if (!fb.playing && !fb.track) return;
+  fb.playing = false;
+  fb.track = null;
+  fb.handOver = false;
+}
+
+// L'attente cède la place à une chanson d'invité
+function passerALaChanson(index) {
+  const track = state.playlist[index];
+  if (!track) return;
+
+  arreterAttente();
+  state.currentTrackIndex = index;
+  state.playbackTime = 0;
+  state.isPlaying = true;
+  state.guestActive = true;
+  state.trackStartedAt = Date.now();
+  track.played = true;
+
+  console.log(`Attente : « ${track.title} » prend le relais`);
+}
+
+// Décide qui doit jouer. Appelée après chaque changement de file ou de
+// lecture, et à chaque interrogation de /api/playlist : c'est le seul
+// endroit où l'attente démarre et s'arrête.
+function majAttente() {
+  const f = CONFIG.fallback;
+  const fb = state.fallback;
+
+  if (!attenteConfiguree()) { arreterAttente(); return; }
+  if (state.adminPaused) return;   // la pause fige tout, l'attente comprise
+
+  const attente = prochaineChanson();
+
+  if (fb.playing) {
+    if (attente === -1) { alimenterAttente(); return; }
+
+    // Une chanson attend son tour. La webradio n'a pas de fin : on la coupe.
+    // Une piste de playlist, elle, mérite d'aller jusqu'au bout.
+    if (f.mode === 'radio') passerALaChanson(attente);
+    else { fb.handOver = true; alimenterAttente(); }
+    return;
+  }
+
+  // Plus rien à jouer côté invités : l'attente prend le relais
+  if (attente === -1 && !state.guestActive) {
+    fb.playing = true;
+    fb.handOver = false;
+    state.isPlaying = true;
+    state.playbackTime = 0;
+    alimenterAttente();
+  }
+}
+
+// L'écran de lecture signale la fin d'une piste d'attente
+function attenteTerminee() {
+  const fb = state.fallback;
+  if (!fb.playing) return;
+
+  if (CONFIG.fallback.mode === 'playlist' && fb.queue.length) {
+    fb.index = (fb.index + 1) % fb.queue.length;
+  }
+
+  const attente = prochaineChanson();
+  if (attente !== -1) { passerALaChanson(attente); return; }
+
+  fb.handOver = false;
+  alimenterAttente();
+}
+
+// Piste d'attente précédente (bouton ⏮ quand l'attente joue)
+function attentePrecedente() {
+  const fb = state.fallback;
+  if (!fb.playing || CONFIG.fallback.mode !== 'playlist' || !fb.queue.length) return;
+  fb.index = (fb.index - 1 + fb.queue.length) % fb.queue.length;
+  alimenterAttente();
+}
+
+// Vue envoyée aux écrans. Le flux passe par le jukebox plutôt que par
+// l'adresse d'origine : même origine, sinon le visualiseur de l'écran de
+// lecture (Web Audio) coupe le son d'une source distante.
+function attenteView() {
+  const f = CONFIG.fallback;
+  const fb = state.fallback;
+  if (!fb.track) {
+    return {
+      mode: f.mode, configured: attenteConfiguree(), playing: fb.playing,
+      track: null, error: fb.error
+    };
+  }
+
+  const piste = publicTrack(fb.track, true);
+  delete piste.streamUrl;
+  delete piste.metadata;
+  piste.streamPath = fb.track.source === 'radio'
+    ? '/api/stream/radio'
+    : `/api/stream/attente/${encodeURIComponent(fb.track.id)}`;
+
+  return {
+    mode: f.mode,
+    configured: attenteConfiguree(),
+    playing: fb.playing,
+    handOver: fb.handOver,
+    label: f.mode === 'radio'
+      ? (f.radioName || 'Webradio')
+      : (f.playlistName || 'Playlist Navidrome'),
+    track: piste,
+    error: fb.error
+  };
+}
+
 // ============= API PUBLIQUE =============
 
 // Admin auth (doit rester avant le middleware requireAdmin)
@@ -1414,7 +1769,8 @@ app.get('/api/config', (req, res) => {
     sources: {
       navidrome: CONFIG.navidrome.enabled,
       soulseek: soulseekAvailable()
-    }
+    },
+    fallbackMode: CONFIG.fallback.mode
   });
 });
 
@@ -1532,6 +1888,10 @@ function addToPlaylist(song, user) {
 
   // Téléchargement anticipé : le morceau doit être prêt à son tour
   if (playlistEntry.source === 'soulseek') queueDownload(playlistEntry);
+
+  // Une chanson vient d'arriver : la musique d'attente doit s'effacer,
+  // tout de suite s'il s'agit d'une webradio.
+  majAttente();
 
   return playlistEntry;
 }
@@ -1675,6 +2035,10 @@ app.get('/api/playlist', (req, res) => {
     queueDownload(current);
   }
 
+  // C'est aussi le battement de coeur de la musique d'attente : elle
+  // demarre, cede la place ou avance ici, sans minuterie dediee.
+  majAttente();
+
   res.json({
     playlist: state.playlist.map((track, index) =>
       publicTrack(track, index === state.currentTrackIndex)),
@@ -1682,7 +2046,8 @@ app.get('/api/playlist', (req, res) => {
     isPlaying: state.isPlaying,
     playbackTime: state.playbackTime,
     seekSeq: state.seekSeq,
-    fadeSeconds: CONFIG.fadeSeconds
+    fadeSeconds: CONFIG.fadeSeconds,
+    fallback: attenteView()
   });
 });
 
@@ -1755,6 +2120,180 @@ app.put('/api/admin/settings', (req, res) => {
     fadeSeconds: CONFIG.fadeSeconds,
     soulseekSearchSeconds: Math.round(CONFIG.soulseek.searchTimeMs / 1000)
   });
+});
+
+// ---- Musique d'attente ----
+
+function reglagesAttenteView() {
+  const f = CONFIG.fallback;
+  const fb = state.fallback;
+
+  return {
+    mode: f.mode,
+    radioUrl: f.radioUrl,
+    radioName: f.radioName,
+    radioHls: f.radioHls,
+    playlistId: f.playlistId,
+    playlistName: f.playlistName,
+    shuffle: f.shuffle,
+    configured: attenteConfiguree(),
+    navidrome: CONFIG.navidrome.enabled,
+    hlsDisponible: hlsInstalle(),
+    status: {
+      playing: fb.playing,
+      handOver: fb.handOver,
+      queueLength: fb.queue.length,
+      position: fb.queue.length ? fb.index + 1 : 0,
+      title: fb.track ? fb.track.title : null,
+      artist: fb.track ? fb.track.artist : null,
+      error: fb.error
+    }
+  };
+}
+
+app.get('/api/admin/fallback', (req, res) => {
+  res.json(reglagesAttenteView());
+});
+
+// Playlists disponibles dans Navidrome, pour la liste déroulante
+app.get('/api/admin/fallback/playlists', async (req, res) => {
+  if (!CONFIG.navidrome.enabled) {
+    return res.status(400).json({ error: 'Navidrome est désactivé dans le .env' });
+  }
+
+  try {
+    res.json({ playlists: await navidromePlaylists() });
+  } catch (error) {
+    console.error('Navidrome : playlists indisponibles —', error.message);
+    res.status(502).json({ error: error.message });
+  }
+});
+
+// Interroge une adresse de flux : répond-elle du son, et de quelle sorte ?
+// Sert au bouton « Tester » comme à l'enregistrement du réglage.
+async function sonderFlux(url) {
+  const essai = await axios.get(url, {
+    responseType: 'stream',
+    timeout: 8000,
+    maxRedirects: 5,
+    headers: { 'User-Agent': 'Jukebox', 'Icy-MetaData': '0' },
+    validateStatus: status => status >= 200 && status < 400
+  });
+
+  const type = String(essai.headers['content-type'] || '').toLowerCase();
+  const nom = essai.headers['icy-name'] || null;
+  essai.data.destroy();   // on voulait juste savoir si ça répond
+
+  return { contentType: type, name: nom, hls: estHls(type, url) };
+}
+
+// Vérifie qu'une adresse de webradio répond bien du son, avant la soirée
+app.post('/api/admin/fallback/test', async (req, res) => {
+  const url = String((req.body && req.body.url) || '').trim();
+  if (!/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: 'Adresse invalide (http:// ou https://)' });
+  }
+
+  let sonde;
+  try {
+    sonde = await sonderFlux(url);
+  } catch (error) {
+    return res.status(502).json({ error: `Flux injoignable (${error.message})` });
+  }
+
+  if (!sonde.hls && !/audio|ogg|octet-stream|video\/mp2t/.test(sonde.contentType)) {
+    return res.status(400).json({
+      error: `Le serveur répond « ${sonde.contentType || 'type inconnu'} », pas du son.`
+           + ' Vérifiez que c\'est bien l\'adresse du flux, pas celle du site.'
+    });
+  }
+
+  res.json({
+    success: true,
+    contentType: sonde.contentType,
+    name: sonde.name,
+    hls: sonde.hls,
+    // hls.js absent : un flux .m3u8 ne sortira que sur Safari. Mieux vaut
+    // le dire maintenant qu'en pleine soirée.
+    hlsPret: sonde.hls ? hlsInstalle() : true
+  });
+});
+
+app.put('/api/admin/fallback', async (req, res) => {
+  const body = req.body || {};
+  const f = CONFIG.fallback;
+
+  const mode = body.mode === undefined ? f.mode : String(body.mode);
+  if (!['off', 'radio', 'playlist'].includes(mode)) {
+    return res.status(400).json({ error: 'Mode inconnu' });
+  }
+
+  const radioUrl = body.radioUrl === undefined ? f.radioUrl : String(body.radioUrl).trim();
+  const playlistId = body.playlistId === undefined ? f.playlistId : String(body.playlistId).trim();
+
+  if (mode === 'radio' && !/^https?:\/\//i.test(radioUrl)) {
+    return res.status(400).json({ error: 'Adresse du flux invalide (http:// ou https://)' });
+  }
+  if (mode === 'playlist') {
+    if (!CONFIG.navidrome.enabled) {
+      return res.status(400).json({ error: 'Navidrome est désactivé dans le .env' });
+    }
+    if (!playlistId) return res.status(400).json({ error: 'Choisissez une playlist' });
+  }
+
+  const ancienneListe = f.playlistId;
+  const ancienMelange = f.shuffle;
+  const ancienneRadio = f.radioUrl;
+
+  f.mode = mode;
+  f.radioUrl = radioUrl;
+  f.playlistId = playlistId;
+  if (body.radioName !== undefined) f.radioName = String(body.radioName).trim().slice(0, 60);
+  if (body.shuffle !== undefined) f.shuffle = Boolean(body.shuffle);
+  if (body.playlistName !== undefined) f.playlistName = String(body.playlistName).trim().slice(0, 80);
+
+  // Playlist changée (ou ordre de lecture) : la file d'attente est à refaire
+  if (f.playlistId !== ancienneListe || f.shuffle !== ancienMelange) {
+    state.fallback.queue = [];
+    state.fallback.index = 0;
+    state.fallback.loadedFrom = null;
+    state.fallback.error = null;
+    prochainEssaiAttente = 0;   // l'organisateur veut un essai tout de suite
+  }
+
+  // HLS ou son brut ? Le lecteur doit le savoir avant de jouer. On le
+  // demande au serveur de la radio ; s'il ne répond pas, l'extension de
+  // l'adresse tranche.
+  if (mode === 'radio' && radioUrl !== ancienneRadio) {
+    f.radioHls = estHls(null, radioUrl);
+    try {
+      f.radioHls = (await sonderFlux(radioUrl)).hls;
+    } catch (error) {
+      console.error('Webradio : sondage impossible —', error.message);
+    }
+  }
+
+  // Changer de mode en pleine attente : on repart de la nouvelle source
+  if (state.fallback.playing) {
+    state.fallback.track = null;
+    if (!attenteConfiguree()) arreterAttente();
+  }
+
+  enregistrerReglagesAttente();
+  majAttente();
+
+  // La playlist est chargée maintenant : l'organisateur voit tout de suite
+  // si elle est lisible, au lieu de le découvrir au premier silence.
+  if (f.mode === 'playlist') {
+    await chargerFileAttente();
+    majAttente();   // la file est là : l'attente peut désigner sa piste
+  }
+
+  console.log(`⚙ Musique d'attente : ${f.mode === 'off' ? 'désactivée'
+    : f.mode === 'radio' ? `webradio ${f.radioUrl}${f.radioHls ? ' (HLS)' : ''}`
+    : `playlist « ${f.playlistName || f.playlistId} »${f.shuffle ? ' (aléatoire)' : ''}`}`);
+
+  res.json(Object.assign({ success: true }, reglagesAttenteView()));
 });
 
 // Liste complète des utilisateurs
@@ -1832,22 +2371,49 @@ function applyPlaybackAction(action, trackIndex, time) {
   const previousIndex = state.currentTrackIndex;
   const previousTrack = state.playlist[previousIndex];
 
+  // ⏭ et ⏮ pendant la musique d'attente, sans chanson en file : ils
+  // font defiler l'attente elle-meme plutot que de ne rien faire.
+  if (state.fallback.playing && prochaineChanson() === -1
+      && (action === 'next' || action === 'prev')) {
+    if (action === 'next') attenteTerminee();
+    else attentePrecedente();
+    state.adminPaused = false;
+    state.isPlaying = true;
+    return {
+      isPlaying: state.isPlaying,
+      currentIndex: state.currentTrackIndex,
+      playbackTime: state.playbackTime,
+      seekSeq: state.seekSeq
+    };
+  }
+
   switch (action) {
     case 'play':
       state.isPlaying = true;
+      state.adminPaused = false;
+      // Relancer la lecture sur une file non vide, c'est reprendre la
+      // chanson : l'attente rend la main.
+      if (!state.fallback.playing && state.playlist[state.currentTrackIndex]) {
+        state.guestActive = true;
+      }
       break;
     case 'pause':
       state.isPlaying = false;
+      state.adminPaused = true;
       break;
     case 'seek':
       state.playbackTime = time;
       state.seekSeq += 1;   // signale a l'ecran de lecture qu'il doit se caler
       break;
     case 'next':
+      arreterAttente();
+      state.adminPaused = false;
       if (state.currentTrackIndex >= state.playlist.length - 1) {
-        // Dernier morceau terminé : on arrête et on libère sa copie locale
+        // Dernier morceau terminé : on arrête et on libère sa copie locale.
+        // La musique d'attente prendra le relais si elle est configurée.
         state.isPlaying = false;
         state.playbackTime = 0;
+        state.guestActive = false;
         if (previousTrack) {
           previousTrack.played = true;
           discardPlayedTrack(previousTrack);
@@ -1857,19 +2423,26 @@ function applyPlaybackAction(action, trackIndex, time) {
       state.currentTrackIndex += 1;
       state.playbackTime = 0;
       state.isPlaying = true;
+      state.guestActive = true;
       if (state.playlist[state.currentTrackIndex]) {
         state.playlist[state.currentTrackIndex].played = true;
       }
       break;
     case 'prev':
+      arreterAttente();
+      state.adminPaused = false;
       state.currentTrackIndex = Math.max(state.currentTrackIndex - 1, 0);
       state.playbackTime = 0;
       state.isPlaying = true;
+      state.guestActive = Boolean(state.playlist[state.currentTrackIndex]);
       break;
     case 'goto':
+      arreterAttente();
+      state.adminPaused = false;
       state.currentTrackIndex = trackIndex;
       state.playbackTime = 0;
       state.isPlaying = true;
+      state.guestActive = true;
       if (state.playlist[state.currentTrackIndex]) {
         state.playlist[state.currentTrackIndex].played = true;
       }
@@ -1891,6 +2464,9 @@ function applyPlaybackAction(action, trackIndex, time) {
     state.trackStartedAt = Date.now();
   }
 
+  // Le silence appelle la musique d'attente ; une chanson la renvoie.
+  majAttente();
+
   return {
     isPlaying: state.isPlaying,
     currentIndex: state.currentTrackIndex,
@@ -1908,10 +2484,36 @@ app.post('/api/admin/playback', (req, res) => {
 // L'ecran de lecture ne commande rien : il rend compte. Fin de morceau,
 // echec de lecture et position courante, pour la piste qu'il joue vraiment.
 app.post('/api/player/event', (req, res) => {
-  const { type, index, time } = req.body || {};
+  const { type, index, time, fallback } = req.body || {};
+
+  // Evenements de la musique d'attente : elle n'a pas de place dans la
+  // file, elle ne se repere donc pas par un index.
+  if (fallback) {
+    if (!state.fallback.playing) {
+      return res.json({ ignored: true, currentIndex: state.currentTrackIndex });
+    }
+
+    if (type === 'position') {
+      if (typeof time === 'number' && time >= 0) state.playbackTime = time;
+      return res.json({ success: true });
+    }
+
+    if (type === 'ended' || type === 'failed') {
+      const piste = state.fallback.track;
+      console.log(`Attente : ${type === 'ended' ? 'fin' : 'échec'} de « `
+        + `${(piste || {}).title || '?'} »`);
+
+      // Une piste illisible ne doit pas boucler : on passe a la suivante.
+      attenteTerminee();
+      return res.json({ success: true, fallback: attenteView() });
+    }
+
+    return res.status(400).json({ error: 'Évènement inconnu' });
+  }
 
   // Un evenement qui ne concerne pas la piste en cours est perime
-  if (typeof index !== 'number' || index !== state.currentTrackIndex) {
+  if (typeof index !== 'number' || index !== state.currentTrackIndex
+      || state.fallback.playing) {
     return res.json({ ignored: true, currentIndex: state.currentTrackIndex });
   }
 
@@ -2070,6 +2672,9 @@ app.post('/api/admin/playlist/clear', (req, res) => {
   state.currentTrackIndex = 0;
   state.isPlaying = false;
   state.playbackTime = 0;
+  state.guestActive = false;
+  state.adminPaused = false;   // la soirée repart : l'attente reprend la main
+  majAttente();
   for (const user of state.users.values()) {
     user.addedSongs = [];
     user.totalAdded = 0;
@@ -2079,6 +2684,226 @@ app.post('/api/admin/playlist/clear', (req, res) => {
 });
 
 // ============= STREAMING =============
+// Relais d'un flux distant. Le navigateur ne voit que le jukebox : même
+// origine (le visualiseur de l'écran de lecture couperait le son d'une
+// source distante), et une seule adresse à joindre pour les téléphones.
+async function relayerFlux(url, req, res, etiquette) {
+  // Le lecteur demande une plage d'octets (recherche dans le morceau,
+  // reprise après une coupure) : on la relaie telle quelle.
+  const headers = {};
+  if (req.headers.range) headers.Range = req.headers.range;
+
+  const proxyRes = await axios.get(url, {
+    responseType: 'stream',
+    headers,
+    // Surtout pas de timeout ici : le navigateur cesse de lire dès que son
+    // tampon est plein, parfois plusieurs minutes. Un timeout de socket
+    // coupait alors le flux en plein morceau, et la lecture s'arrêtait
+    // brutalement au milieu de la chanson.
+    timeout: 0,
+    maxRedirects: 5,
+    validateStatus: status => status >= 200 && status < 400
+  });
+
+  res.status(proxyRes.status);
+  for (const name of ['content-type', 'content-length', 'content-range',
+                      'accept-ranges', 'etag', 'last-modified']) {
+    const value = proxyRes.headers[name];
+    if (value !== undefined) res.set(name, value);
+  }
+  if (proxyRes.headers['accept-ranges'] === undefined) res.set('Accept-Ranges', 'bytes');
+
+  const upstream = proxyRes.data;
+
+  // Onglet fermé ou changement de piste : on libère la connexion distante
+  res.on('close', () => upstream.destroy());
+
+  upstream.on('error', error => {
+    console.error(`${etiquette} : flux interrompu —`, error.message);
+    if (!res.headersSent) res.status(502).json({ error: 'Flux interrompu' });
+    else res.destroy();
+  });
+
+  return upstream.pipe(res);
+}
+
+// ---- HLS (.m3u8) ----
+// Un flux HLS n'est pas du son : c'est une liste de segments, renouvelée en
+// continu. On la relaie en réécrivant chaque adresse pour qu'elle repasse
+// par le jukebox — le navigateur ne joint ainsi qu'une seule origine, et le
+// visualiseur de l'écran de lecture garde le droit d'écouter le son.
+
+const HLS_TYPES = /mpegurl|m3u8/i;
+const HLS_TTL_MS = 30 * 60 * 1000;
+
+// Seules les adresses vues dans une liste qu'on a servie sont relayables :
+// sans cette liste, la route deviendrait un relais ouvert vers n'importe quoi.
+const hlsAutorisees = new Map();   // id -> { url, expire }
+
+function hlsInscrire(url) {
+  const id = crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
+
+  if (hlsAutorisees.size > 5000) {
+    const maintenant = Date.now();
+    for (const [cle, v] of hlsAutorisees) {
+      if (v.expire < maintenant) hlsAutorisees.delete(cle);
+    }
+  }
+
+  hlsAutorisees.set(id, { url, expire: Date.now() + HLS_TTL_MS });
+  return `/api/stream/hls/${id}`;
+}
+
+function estHls(contentType, url) {
+  if (contentType && HLS_TYPES.test(contentType)) return true;
+  return /\.m3u8(\?|$)/i.test(String(url || ''));
+}
+
+// Sans hls.js, un flux .m3u8 ne sort que sur Safari, qui le lit nativement.
+function hlsInstalle() {
+  try {
+    require.resolve('hls.js/dist/hls.light.min.js');
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+// Réécrit les adresses d'une liste HLS : segments, sous-listes, clés.
+function reecrireHls(texte, base) {
+  const absolue = cible => {
+    try { return hlsInscrire(new URL(cible, base).toString()); }
+    catch (error) { return cible; }
+  };
+
+  return texte.split('\n').map(ligne => {
+    const nette = ligne.trim();
+    if (!nette) return ligne;
+
+    // Les attributs URI="..." des balises (clé de chiffrement, init, pistes)
+    if (nette.startsWith('#')) {
+      return ligne.replace(/URI="([^"]+)"/g, (tout, cible) => `URI="${absolue(cible)}"`);
+    }
+
+    return absolue(nette);   // segment ou sous-liste
+  }).join('\n');
+}
+
+async function servirListeHls(url, res) {
+  const reponse = await axios.get(url, {
+    responseType: 'text',
+    timeout: 15000,
+    maxRedirects: 5,
+    headers: { 'User-Agent': 'Jukebox' },
+    validateStatus: status => status >= 200 && status < 400
+  });
+
+  // L'adresse finale après redirections : c'est elle qui sert de base
+  // aux adresses relatives de la liste.
+  const base = (reponse.request && reponse.request.res && reponse.request.res.responseUrl) || url;
+
+  res.set('Content-Type', 'application/vnd.apple.mpegurl');
+  res.set('Cache-Control', 'no-store');
+  res.send(reecrireHls(String(reponse.data), base));
+}
+
+// Segment, sous-liste ou clé d'un flux HLS déjà servi
+app.get('/api/stream/hls/:id', async (req, res) => {
+  const entree = hlsAutorisees.get(req.params.id);
+  if (!entree || entree.expire < Date.now()) {
+    hlsAutorisees.delete(req.params.id);
+    return res.status(404).json({ error: 'Segment inconnu ou expiré' });
+  }
+
+  entree.expire = Date.now() + HLS_TTL_MS;   // flux encore écouté
+
+  try {
+    // Une sous-liste doit être réécrite à son tour, comme la liste maître
+    if (/\.m3u8(\?|$)/i.test(entree.url)) return await servirListeHls(entree.url, res);
+
+    await relayerFlux(entree.url, req, res, 'HLS');
+  } catch (error) {
+    console.error('HLS : segment injoignable —', error.message);
+    if (!res.headersSent) res.status(502).json({ error: error.message });
+  }
+});
+
+// hls.js, servi depuis les dépendances du projet : l'écran de lecture
+// tourne souvent sur un réseau local sans accès à Internet.
+app.get('/vendor/hls.js', (req, res) => {
+  let fichier;
+  try {
+    fichier = require.resolve('hls.js/dist/hls.light.min.js');
+  } catch (error) {
+    return res.status(404).json({
+      error: 'hls.js absent — lancez « npm install » pour lire les flux .m3u8'
+    });
+  }
+  res.set('Cache-Control', 'public, max-age=86400');
+  res.sendFile(fichier);
+});
+
+// Webradio d'attente. Un flux sans fin : ni plage d'octets, ni cache.
+app.get('/api/stream/radio', async (req, res) => {
+  const url = CONFIG.fallback.radioUrl;
+  if (!url) return res.status(404).json({ error: 'Aucune webradio configurée' });
+
+  try {
+    // Flux HLS : on sert la liste des segments, réécrite
+    if (CONFIG.fallback.radioHls) return await servirListeHls(url, res);
+
+    const proxyRes = await axios.get(url, {
+      responseType: 'stream',
+      timeout: 0,
+      maxRedirects: 5,
+      // Sans ce refus, certains serveurs Icecast glissent leurs métadonnées
+      // dans le flux audio : le lecteur les prend pour du son et crachote.
+      headers: { 'User-Agent': 'Jukebox', 'Icy-MetaData': '0' },
+      validateStatus: status => status >= 200 && status < 400
+    });
+
+    // Adresse changée de nature depuis son enregistrement (redirection vers
+    // un .m3u8) : on bascule plutôt que de servir une liste comme du son.
+    if (estHls(proxyRes.headers['content-type'], url)) {
+      proxyRes.data.destroy();
+      CONFIG.fallback.radioHls = true;
+      return await servirListeHls(url, res);
+    }
+
+    res.status(200);
+    res.set('Content-Type', proxyRes.headers['content-type'] || 'audio/mpeg');
+    res.set('Cache-Control', 'no-store');
+
+    const upstream = proxyRes.data;
+    res.on('close', () => upstream.destroy());
+    upstream.on('error', error => {
+      console.error('Webradio : flux interrompu —', error.message);
+      if (!res.headersSent) res.status(502).json({ error: 'Flux interrompu' });
+      else res.destroy();
+    });
+
+    upstream.pipe(res);
+  } catch (error) {
+    console.error('Webradio : injoignable —', error.message);
+    state.fallback.error = `Webradio injoignable (${error.message})`;
+    if (!res.headersSent) res.status(502).json({ error: state.fallback.error });
+  }
+});
+
+// Piste de la playlist d'attente : elle n'est pas dans la file, elle a
+// donc sa propre adresse de lecture.
+app.get('/api/stream/attente/:id', async (req, res) => {
+  const piste = state.fallback.queue.find(t => String(t.id) === String(req.params.id));
+  if (!piste) return res.status(404).json({ error: 'Piste introuvable' });
+
+  try {
+    await relayerFlux(piste.streamUrl, req, res, 'Attente');
+  } catch (error) {
+    console.error('Attente : lecture impossible —', error.message);
+    if (!res.headersSent) res.status(502).json({ error: error.message });
+  }
+});
+
 app.get('/api/stream/:source/:id', async (req, res) => {
   const { source, id } = req.params;
 
@@ -2087,43 +2912,7 @@ app.get('/api/stream/:source/:id', async (req, res) => {
       const song = state.playlist.find(s => s.source === 'navidrome' && s.id === id);
       if (!song) return res.status(404).json({ error: 'Piste introuvable' });
 
-      // Le lecteur demande une plage d'octets (recherche dans le morceau,
-      // reprise après une coupure) : on la relaie telle quelle.
-      const headers = {};
-      if (req.headers.range) headers.Range = req.headers.range;
-
-      const proxyRes = await axios.get(song.streamUrl, {
-        responseType: 'stream',
-        headers,
-        // Surtout pas de timeout ici : le navigateur cesse de lire dès que son
-        // tampon est plein, parfois plusieurs minutes. Un timeout de socket
-        // coupait alors le flux en plein morceau, et la lecture s'arrêtait
-        // brutalement au milieu de la chanson.
-        timeout: 0,
-        maxRedirects: 5,
-        validateStatus: status => status >= 200 && status < 400
-      });
-
-      res.status(proxyRes.status);
-      for (const name of ['content-type', 'content-length', 'content-range',
-                          'accept-ranges', 'etag', 'last-modified']) {
-        const value = proxyRes.headers[name];
-        if (value !== undefined) res.set(name, value);
-      }
-      if (proxyRes.headers['accept-ranges'] === undefined) res.set('Accept-Ranges', 'bytes');
-
-      const upstream = proxyRes.data;
-
-      // Onglet fermé ou changement de piste : on libère la connexion Navidrome
-      res.on('close', () => upstream.destroy());
-
-      upstream.on('error', error => {
-        console.error('Navidrome : flux interrompu —', error.message);
-        if (!res.headersSent) res.status(502).json({ error: 'Flux interrompu' });
-        else res.destroy();
-      });
-
-      return upstream.pipe(res);
+      return await relayerFlux(song.streamUrl, req, res, 'Navidrome');
     }
 
     if (source === 'soulseek') {
@@ -2215,6 +3004,17 @@ app.listen(PORT, async () => {
   console.log(`- Fenêtre du quota: ${CONFIG.quotaWindowMinutes > 0 ? CONFIG.quotaWindowMinutes + ' minutes (glissant)' : 'désactivée (quota définitif)'}`);
   console.log(`- Fondu entre les chansons: ${CONFIG.fadeSeconds > 0 ? CONFIG.fadeSeconds + ' s' : 'désactivé'}`);
   console.log(`- Navidrome: ${CONFIG.navidrome.enabled}`);
+
+  // Musique d'attente : réglages du fichier, sinon ceux du .env
+  chargerReglagesAttente();
+  const attente = CONFIG.fallback;
+  console.log(`- Musique d'attente: ${attente.mode === 'off' ? 'désactivée'
+    : attente.mode === 'radio' ? `webradio ${attente.radioUrl || '(adresse manquante)'}`
+    : `playlist Navidrome ${attente.playlistName || attente.playlistId || '(non choisie)'}`}`);
+  if (attente.mode !== 'off' && !attenteConfiguree()) {
+    console.log('  ⚠ Incomplète : à régler depuis le panneau admin.');
+  }
+  majAttente();
 
   if (CONFIG.soulseek.enabled) {
     resetDownloadDir();
