@@ -1,5 +1,12 @@
 <!DOCTYPE html>
-<!-- Jukebox — ecran de lecture — Version 1.2.1 (2026-09-18)
+<!-- Jukebox — ecran de lecture — Version 1.3.2 (2026-09-24)
+     1.3.2 — Le QR remplit son carre blanc : marge de 1 module seulement
+             (le cadre blanc complete la zone de silence).
+     1.3.1 — QR code encore agrandi (240 px) ; la pochette se reduit
+             d'autant en mode sans paroles pour que rien ne deborde.
+     1.3.0 — Invitation a rejoindre : QR code agrandi a gauche, textes et
+             lien a sa droite, en plus gros. Si public/logo.png existe, il
+             s'affiche a droite et les textes passent au milieu.
      1.2.1 — Correction : sur un flux en direct, le navigateur annonce une
              duree qui suit ce qu'il a telecharge. Le lecteur se croyait
              donc en permanence a quelques secondes de la fin et enchainait
@@ -546,7 +553,7 @@
     body.sans-paroles {
       /* Le reste de la colonne (onde, textes, progression, QR, liens) occupe
          une hauteur fixe : on la retranche pour que rien ne deborde. */
-      --stack-w: clamp(200px, min(100%, calc(100vh - 655px)), 700px);
+      --stack-w: clamp(200px, min(100%, calc(100vh - 705px)), 700px);
     }
 
     body.sans-paroles .player-section {
@@ -585,30 +592,17 @@
       font-size: 15px;
     }
 
-    /* Colonne large : l'invitation passe en ligne (QR a gauche, texte a
-       droite). Elle rend ainsi une centaine de pixels a la pochette. */
-    @media (min-width: 1201px) {
-      body.sans-paroles .join {
-        flex-direction: row;
-        flex-wrap: wrap;
-        justify-content: center;
-        align-items: center;
-        text-align: left;
-        gap: 18px;
-      }
-
-      body.sans-paroles .join-url {
-        flex-basis: 100%;
-        text-align: center;
-      }
-    }
-
     /* Ecran large mais peu haut (1366x768, videoprojecteur) : le QR code et
        les textes se resserrent pour laisser de quoi voir la pochette. */
     @media (min-width: 1201px) and (max-height: 850px) {
       body.sans-paroles .join-qr {
-        width: 110px;
-        height: 110px;
+        width: 170px;
+        height: 170px;
+      }
+
+      body.sans-paroles .join-logo {
+        max-width: 110px;
+        max-height: 110px;
       }
 
       body.sans-paroles .join {
@@ -728,13 +722,29 @@
         height: 50px;
       }
 
-      .join {
+      body .join {
         width: 100%;
+        flex-direction: column;
+        text-align: center;
       }
 
-      .join-qr {
-        width: 130px;
-        height: 130px;
+      body .join-text,
+      body .join.avec-logo .join-text {
+        align-items: center;
+      }
+
+      body .join-qr {
+        width: 190px;
+        height: 190px;
+      }
+
+      body .join-logo {
+        max-width: 100px;
+        max-height: 100px;
+      }
+
+      body .join-url {
+        margin-left: 0;
       }
 
       .playlist {
@@ -816,55 +826,88 @@
       min-height: 18px;
     }
 
-    /* Invitation a rejoindre : QR code + adresse en clair */
+    /* Invitation a rejoindre : QR a gauche, textes au centre / a droite,
+       logo optionnel (public/logo.png) tout a droite */
     .join {
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       align-items: center;
-      gap: 10px;
+      gap: 22px;
       margin-top: 6px;
-      padding: 18px 20px;
+      padding: 18px 22px;
       border-radius: 16px;
       background: rgba(255, 255, 255, 0.05);
       border: 1px solid var(--border);
-      text-align: center;
+      text-align: left;
       max-width: 100%;
     }
 
     .join-qr {
-      width: 150px;
-      height: 150px;
-      border-radius: 10px;
+      width: 240px;
+      height: 240px;
+      border-radius: 12px;
       background: #fff;
-      padding: 6px;
+      padding: 8px;
       flex: none;
       display: block;
       box-shadow: 0 0 22px rgba(0, 229, 255, 0.18);
     }
 
+    .join-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    /* Avec logo : les textes se centrent entre le QR et le logo */
+    .join.avec-logo .join-text {
+      align-items: center;
+      text-align: center;
+    }
+
+    .join-logo {
+      flex: none;
+      max-width: 160px;
+      max-height: 160px;
+      object-fit: contain;
+      display: block;
+    }
+
+    .join-logo[hidden] {
+      display: none;
+    }
+
     .join-title {
-      font-size: 15px;
-      font-weight: 600;
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.25;
     }
 
     .join-hint {
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.5;
-      margin-top: 4px;
+      font-size: 16px;
+      color: rgba(255, 255, 255, 0.78);
+      line-height: 1.45;
     }
 
     .join-url {
       display: inline-block;
-      font-size: 13px;
+      font-size: 18px;
       color: var(--neon);
-      font-weight: 600;
-      word-break: break-all;
-      line-height: 1.4;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
       text-decoration: none;
       padding: 4px 8px;
+      margin-left: -8px;
       border-radius: 6px;
       transition: background 0.2s, color 0.2s;
+    }
+
+    .join.avec-logo .join-url {
+      margin-left: 0;
     }
 
     a.join-url:hover {
@@ -921,12 +964,13 @@
       </div>
 
       <div class="join">
-        <img class="join-qr" id="joinQr" src="/api/qr" alt="QR code vers la page d'ajout de musique">
-        <div>
+        <img class="join-qr" id="joinQr" src="/api/qr?margin=1" alt="QR code vers la page d'ajout de musique">
+        <div class="join-text">
           <div class="join-title">📱 Ajoutez vos musiques</div>
-          <div class="join-hint">Scannez ce code avec votre téléphone</div>
+          <div class="join-hint">Scannez ce code avec votre téléphone<br>ou ouvrez :</div>
+          <a class="join-url" id="joinUrl" target="_blank" rel="noopener">&nbsp;</a>
         </div>
-        <a class="join-url" id="joinUrl" target="_blank" rel="noopener">&nbsp;</a>
+        <img class="join-logo" id="joinLogo" alt="Logo" hidden>
       </div>
 
       <div class="links">
@@ -1947,6 +1991,16 @@
       } catch (error) {
         console.warn('Adresse invité indisponible');
       }
+    })();
+
+    // Logo optionnel : affiche seulement si public/logo.png existe
+    (function afficherLogo() {
+      const logo = document.getElementById('joinLogo');
+      logo.onload = () => {
+        logo.hidden = false;
+        logo.closest('.join').classList.add('avec-logo');
+      };
+      logo.src = '/logo.png';   // absent : erreur 404 silencieuse, rien ne change
     })();
 
     // Une seule horloge pour la barre de progression et les paroles

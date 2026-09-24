@@ -1,6 +1,7 @@
 // ============================================================
 //  Jukebox — serveur
-//  Version : 1.2.1 (2026-09-18)
+//  Version : 1.2.2 (2026-09-24)
+//    1.2.2 — /api/qr accepte ?margin=0..4 (marge blanche en modules).
 //    1.2.1 — Webradio : prise en charge des flux HLS (.m3u8). La liste
 //            des segments est relayee et reecrite par le jukebox, le
 //            navigateur ne joint qu'une seule origine. hls.js est servi
@@ -1779,9 +1780,11 @@ app.get('/api/config', (req, res) => {
 app.get('/api/qr', (req, res) => {
   try {
     const taille = Math.min(600, Math.max(120, parseInt(req.query.size, 10) || 320));
+    const m = parseInt(req.query.margin, 10);
+    const marge = Number.isNaN(m) ? 4 : Math.min(4, Math.max(0, m));
     res.set('Content-Type', 'image/svg+xml; charset=utf-8');
     res.set('Cache-Control', 'no-store');   // l'adresse du serveur peut changer
-    res.send(qrSvg(guestUrl(req), taille));
+    res.send(qrSvg(guestUrl(req), taille, marge));
   } catch (error) {
     console.error('QR code : génération impossible —', error.message);
     res.status(500).json({ error: error.message });

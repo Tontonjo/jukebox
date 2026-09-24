@@ -1,5 +1,6 @@
 // ============================================================================
 // Générateur de QR code minimal, sans dépendance.
+// Version 1.1.0 (2026-09-24) — marge blanche réglable (défaut : 4 modules).
 // Mode octet, correction d'erreur niveau M, versions 1 à 10 (jusqu'à 213
 // caractères) : largement de quoi encoder l'URL de la page invité.
 // Sortie : une image SVG autonome, affichable hors ligne.
@@ -356,10 +357,10 @@ function qrMatrix(text) {
   return { modules: best.modules, size: base.size, version, mask: best.mask };
 }
 
-// SVG autonome : un seul chemin noir sur fond blanc, marge de 4 modules
-function qrSvg(text, pixels) {
+// SVG autonome : un seul chemin noir sur fond blanc, marge de `quiet`
+// modules (4 par défaut, comme le veut la norme)
+function qrSvg(text, pixels, quiet = 4) {
   const { modules, size } = qrMatrix(text);
-  const quiet = 4;
   const total = size + quiet * 2;
 
   let path = '';
