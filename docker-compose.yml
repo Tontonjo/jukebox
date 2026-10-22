@@ -1,6 +1,10 @@
 # ============= JUKEBOX - DOCKER COMPOSE =============
-# Version 1.2.0 - last updated: 12 September 2026
+# Version 1.3.0 - last updated: 22 October 2026
 # Changelog:
+#   1.3.0 - sockseek is built into the image: the daemon runs inside the
+#           container, Soulseek account given by SOULSEEK_USER / SOULSEEK_PASS.
+#           Persistent data (background music settings, Soulseek cache) kept
+#           in the jukebox-data volume.
 #   1.2.0 - jukebox is now the only service. Navidrome and nginx were removed:
 #           they are expected to run outside this compose file (host, another
 #           stack, or another machine). Comments translated to English.
@@ -32,13 +36,16 @@ services:
       NAVIDROME_USER: ${NAVIDROME_USER:-admin}
       NAVIDROME_PASS: ${NAVIDROME_PASS:-password}
 
-      # ----- Soulseek (via sockseek) -----
-      # sockseek is not bundled in the image: the daemon runs alongside it,
-      # so autostart stays off and SOCKSEEK_REMOTE points at the host.
+      # ----- Soulseek (via sockseek, bundled in the image) -----
+      # The jukebox starts the sockseek daemon inside the container.
+      # A Soulseek account is required: set SOULSEEK_USER / SOULSEEK_PASS,
+      # or SOULSEEK_ENABLED=false to use Navidrome only.
       SOULSEEK_ENABLED: ${SOULSEEK_ENABLED:-true}
+      SOULSEEK_USER: ${SOULSEEK_USER:-}
+      SOULSEEK_PASS: ${SOULSEEK_PASS:-}
       SOCKSEEK_PATH: ${SOCKSEEK_PATH:-sockseek}
-      SOCKSEEK_REMOTE: ${SOCKSEEK_REMOTE:-http://host.docker.internal:5030}
-      SOCKSEEK_AUTOSTART: ${SOCKSEEK_AUTOSTART:-false}
+      SOCKSEEK_REMOTE: ${SOCKSEEK_REMOTE:-http://127.0.0.1:5030}
+      SOCKSEEK_AUTOSTART: ${SOCKSEEK_AUTOSTART:-true}
       SOULSEEK_MAX_RESULTS: ${SOULSEEK_MAX_RESULTS:-10}
       SOULSEEK_SEARCH_TIME: ${SOULSEEK_SEARCH_TIME:-20000}
       SOULSEEK_DOWNLOAD_TIMEOUT: ${SOULSEEK_DOWNLOAD_TIMEOUT:-30}
@@ -59,13 +66,14 @@ services:
       # ----- Lyrics -----
       LRCLIB_BASE: ${LRCLIB_BASE:-https://lrclib.net}
 
-    # Lets the container reach services bound to the Docker host (Navidrome,
-    # the sockseek daemon). Native on Docker Desktop; this line is what makes
+    # Lets the container reach services bound to the Docker host (Navidrome). Native on Docker Desktop; this line is what makes
     # it work on Linux.
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
     volumes:
+      # Background music settings and Soulseek cache, kept across restarts
+      - jukebox-data:/app/data
       - ./jukebox-server.js:/app/jukebox-server.js:ro
       - ./qrcode.js:/app/qrcode.js:ro
       - ./public:/app/public:ro
@@ -83,11 +91,15 @@ services:
         max-size: "10m"
         max-file: "3"
 
+volumes:
+  jukebox-data:
+
 # ============= QUICK START =============
 # 1. Create the .env file:
 #      cp .env.example .env
 #      nano .env
-#    Set NAVIDROME_URL to your existing Navidrome server.
+#    Set NAVIDROME_URL to your existing Navidrome server, and
+#    SOULSEEK_USER / SOULSEEK_PASS for the Soulseek fallback.
 #
 # 2. Start:
 #      docker compose up -d

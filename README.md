@@ -1,6 +1,6 @@
 # 🎵 Jukebox
 
-> **Jukebox 1.2.0** · doc rév. 2 — 12 septembre 2026
+> **Jukebox 1.5.0** · doc rév. 4 · 22 octobre 2026
 
 Jukebox web pour les soirées : un **écran de lecture** branché aux enceintes, un
 **panneau admin** qui commande tout, une **page invité** où les personnes
@@ -37,6 +37,85 @@ glissant, refus des doublons (casse, accents et parenthèses ignorés), crédit
 remboursé si un téléchargement échoue. Quotas et fondu modifiables sans
 redémarrage.
 
+## 🐳 Démarrage rapide avec Docker
+
+Image publiée : [`tontonjo/jukebox`](https://hub.docker.com/r/tontonjo/jukebox),
+avec **sockseek intégré** pour le repli Soulseek. Une seule commande, en
+remplaçant les valeurs par les vôtres :
+
+```bash
+docker run -d --name jukebox --restart unless-stopped \
+  -p 3000:3000 \
+  -e ADMIN_PASSWORD=monmotdepasse \
+  -e PUBLIC_URL=http://192.168.1.50:3000 \
+  -e NAVIDROME_URL=http://192.168.1.100:4533 \
+  -e NAVIDROME_USER=admin \
+  -e NAVIDROME_PASS=password \
+  -e SOULSEEK_USER=pseudo-soulseek \
+  -e SOULSEEK_PASS=motdepasse-soulseek \
+  -v jukebox-data:/app/data \
+  tontonjo/jukebox:latest
+```
+
+Puis ouvrir `http://IP-DE-LA-MACHINE:3000` (lecteur), `/admin` et `/guest`.
+
+- `PUBLIC_URL` : adresse de la machine **hôte** vue depuis le réseau. Dans un
+  conteneur, l'adresse détectée seule est interne à Docker et le QR code serait
+  faux.
+- `NAVIDROME_URL` : un Navidrome sur la même machine se joint avec
+  `http://host.docker.internal:4533`, en ajoutant
+  `--add-host=host.docker.internal:host-gateway` sous Linux.
+- **Soulseek** : le démon sockseek tourne dans le conteneur, démarré par le
+  jukebox. Il suffit d'un compte Soulseek (`SOULSEEK_USER` / `SOULSEEK_PASS`).
+  Sans compte, remplacer ces deux lignes par `-e SOULSEEK_ENABLED=false` :
+  seule la bibliothèque Navidrome sert alors.
+- Le volume `jukebox-data` conserve la musique d'attente choisie et le cache
+  Soulseek d'un redémarrage à l'autre.
+- Toutes les variables de [Configuration](#configuration) s'utilisent de la
+  même façon (`-e VARIABLE=valeur`), ou d'un bloc avec `--env-file .env`.
+- Architectures : `amd64` et `arm` 32 bits. sockseek ne publie pas de version
+  `arm64` ; sur cette architecture, l'image construite depuis les sources
+  fonctionne sans Soulseek.
+
+Commandes utiles :
+
+```bash
+docker logs -f jukebox                 # journal (sockseek préfixé « sockseek : »)
+docker restart jukebox                 # redémarrer
+docker pull tontonjo/jukebox:latest && docker rm -f jukebox   # mise à jour, puis relancer la commande ci-dessus
+```
+
+Équivalent Docker Compose (`docker-compose.yml`) :
+
+```yaml
+services:
+  jukebox:
+    image: tontonjo/jukebox:latest
+    container_name: jukebox
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      ADMIN_PASSWORD: monmotdepasse
+      PUBLIC_URL: http://192.168.1.50:3000
+      NAVIDROME_URL: http://192.168.1.100:4533
+      NAVIDROME_USER: admin
+      NAVIDROME_PASS: password
+      SOULSEEK_USER: pseudo-soulseek
+      SOULSEEK_PASS: motdepasse-soulseek
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - jukebox-data:/app/data
+
+volumes:
+  jukebox-data:
+```
+
+```bash
+docker compose up -d
+```
+
 ## Installation
 
 Node.js ≥ 18. Facultatifs : Navidrome joignable, `sockseek` dans le `PATH`,
@@ -65,10 +144,11 @@ sudo systemctl status jukebox
 # Read the log
 sudo journalctl -u jukebox.service -n 50 -f
 ```    
-Docker Compose:
+Docker Compose, en construisant l'image depuis les sources (voir aussi
+[Démarrage rapide avec Docker](#-démarrage-rapide-avec-docker)) :
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
 ## Configuration
@@ -99,6 +179,7 @@ Stricte : `1` et `15`.
 | Variable | Défaut | Description |
 |----------|--------|-------------|
 | `SOULSEEK_ENABLED` | `true` | Active le repli |
+| `SOULSEEK_USER` / `SOULSEEK_PASS` | — | Compte Soulseek, **image Docker uniquement** (hors Docker : `~/.config/sockseek/sockseek.conf`) |
 | `SOCKSEEK_PATH` / `SOCKSEEK_REMOTE` | `sockseek` / `http://127.0.0.1:5030` | Exécutable et adresse du démon |
 | `SOCKSEEK_AUTOSTART` | `true` | Démarre le démon s'il n'écoute pas déjà |
 | `SOULSEEK_DOWNLOAD_DIR` | `./downloads` | Dossier temporaire, vidé au démarrage et à l'arrêt |
@@ -193,6 +274,7 @@ qrcode.js             # QR code, sans dépendance ni réseau
 public/               # player.html · admin.html · guest.html
 nginx.conf            # reverse proxy HTTP
 jukebox.service       # unité systemd             docker-compose.yml
+Dockerfile            # image (sockseek intégré)  docker-entrypoint.sh
 install.sh            # installation assistée     test-services.js
 ```
 
