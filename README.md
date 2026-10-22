@@ -6,7 +6,7 @@ Jukebox web pour les soirées : un **écran de lecture** branché aux enceintes,
 **panneau admin** qui commande tout, une **page invité** où les personnes
 autorisées ajoutent leurs morceaux sous quota.
 
-<img width="500" height="250" alt="image" src="https://github.com/user-attachments/assets/17d80d3d-dadf-47f3-a842-3e5634607201" />
+<img width="750" height="375" alt="image" src="https://github.com/user-attachments/assets/17d80d3d-dadf-47f3-a842-3e5634607201" />
 
 
 La musique vient de **Navidrome** ; à défaut, repli sur **Soulseek** (via
