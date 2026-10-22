@@ -1,6 +1,10 @@
 # ============= JUKEBOX - DOCKER COMPOSE =============
-# Version 1.3.0 - last updated: 22 October 2026
+# Version 1.3.2 - last updated: 22 October 2026
 # Changelog:
+#   1.3.2 - Sources enabled as soon as their credentials are given. Navidrome
+#           credentials no longer have default values.
+#   1.3.1 - NAVIDROME_ENABLED / SOULSEEK_ENABLED empty by default: each source
+#           is enabled automatically when configured (see docker-entrypoint.sh).
 #   1.3.0 - sockseek is built into the image: the daemon runs inside the
 #           container, Soulseek account given by SOULSEEK_USER / SOULSEEK_PASS.
 #           Persistent data (background music settings, Soulseek cache) kept
@@ -31,16 +35,18 @@ services:
       # Navidrome is not started here. Point this at wherever it actually runs.
       # host.docker.internal reaches a Navidrome running on the Docker host;
       # use a LAN address (http://192.168.1.100:4533) for another machine.
-      NAVIDROME_ENABLED: ${NAVIDROME_ENABLED:-true}
+      # Empty = automatic: enabled when NAVIDROME_USER and NAVIDROME_PASS are set
+      NAVIDROME_ENABLED: ${NAVIDROME_ENABLED:-}
       NAVIDROME_URL: ${NAVIDROME_URL:-http://host.docker.internal:4533}
-      NAVIDROME_USER: ${NAVIDROME_USER:-admin}
-      NAVIDROME_PASS: ${NAVIDROME_PASS:-password}
+      NAVIDROME_USER: ${NAVIDROME_USER:-}
+      NAVIDROME_PASS: ${NAVIDROME_PASS:-}
 
       # ----- Soulseek (via sockseek, bundled in the image) -----
       # The jukebox starts the sockseek daemon inside the container.
       # A Soulseek account is required: set SOULSEEK_USER / SOULSEEK_PASS,
       # or SOULSEEK_ENABLED=false to use Navidrome only.
-      SOULSEEK_ENABLED: ${SOULSEEK_ENABLED:-true}
+      # Empty = automatic: enabled when SOULSEEK_USER and SOULSEEK_PASS are set
+      SOULSEEK_ENABLED: ${SOULSEEK_ENABLED:-}
       SOULSEEK_USER: ${SOULSEEK_USER:-}
       SOULSEEK_PASS: ${SOULSEEK_PASS:-}
       SOCKSEEK_PATH: ${SOCKSEEK_PATH:-sockseek}

@@ -1,6 +1,6 @@
 # 🎵 Jukebox
 
-> **Jukebox 1.5.0** · doc rév. 6 · 22 octobre 2026
+> **Jukebox 1.5.0** · doc rév. 8 · 22 octobre 2026
 
 Jukebox web pour les soirées : un **écran de lecture** branché aux enceintes, un
 **panneau admin** qui commande tout, une **page invité** où les personnes
@@ -68,8 +68,13 @@ Puis ouvrir `http://IP-DE-LA-MACHINE:3000` (lecteur), `/admin` et `/guest`.
   `--add-host=host.docker.internal:host-gateway` sous Linux.
 - **Soulseek** : le démon sockseek tourne dans le conteneur, démarré par le
   jukebox. Il suffit d'un compte Soulseek (`SOULSEEK_USER` / `SOULSEEK_PASS`).
-  Sans compte, remplacer ces deux lignes par `-e SOULSEEK_ENABLED=false` :
-  seule la bibliothèque Navidrome sert alors.
+  Sans compte, il suffit de retirer ces deux lignes.
+- Sources automatiques : chacune s'active dès que ses identifiants sont
+  fournis (`NAVIDROME_USER` + `NAVIDROME_PASS`, `SOULSEEK_USER` +
+  `SOULSEEK_PASS`). Pour n'utiliser que l'une des deux, il suffit de ne pas
+  renseigner l'autre. Les journaux l'indiquent au
+  démarrage (`Sources: Navidrome=true, Soulseek=true`). `NAVIDROME_ENABLED` ou
+  `SOULSEEK_ENABLED` à `true` / `false` forcent le choix.
 - Le volume `jukebox-data` conserve la musique d'attente choisie et le cache
   Soulseek d'un redémarrage à l'autre.
 - Toutes les variables de [Configuration](#configuration) s'utilisent de la
@@ -161,7 +166,7 @@ Tout dans `.env`, commenté en détail dans [`.env.example`](.env.example).
 | `ADMIN_PASSWORD` | `admin123` | **À changer impérativement** |
 | `PORT` / `NODE_ENV` | `3000` / `production` | Port d'écoute, mode d'exécution |
 | `PUBLIC_URL` | *(vide)* | Adresse publique du QR code et du lien invité. À renseigner derrière un proxy ou un domaine ; sinon détectée |
-| `NAVIDROME_ENABLED` | `true` | Active la source principale |
+| `NAVIDROME_ENABLED` | `false` *(Docker : automatique)* | Active la source principale. Sous Docker, vide = activée si `NAVIDROME_USER` et `NAVIDROME_PASS` sont renseignés |
 | `NAVIDROME_URL` | `http://localhost:4533` | URL du serveur |
 | `NAVIDROME_USER` / `NAVIDROME_PASS` | — | Identifiants |
 | `MAX_SONGS_PER_USER` 🔥 | `3` | Titres par invité |
@@ -178,7 +183,7 @@ Stricte : `1` et `15`.
 
 | Variable | Défaut | Description |
 |----------|--------|-------------|
-| `SOULSEEK_ENABLED` | `true` | Active le repli |
+| `SOULSEEK_ENABLED` | `true` *(Docker : automatique)* | Active le repli. Sous Docker, vide = activé si `SOULSEEK_USER` et `SOULSEEK_PASS` sont renseignés |
 | `SOULSEEK_USER` / `SOULSEEK_PASS` | — | Compte Soulseek, **image Docker uniquement** (hors Docker : `~/.config/sockseek/sockseek.conf`) |
 | `SOCKSEEK_PATH` / `SOCKSEEK_REMOTE` | `sockseek` / `http://127.0.0.1:5030` | Exécutable et adresse du démon |
 | `SOCKSEEK_AUTOSTART` | `true` | Démarre le démon s'il n'écoute pas déjà |
