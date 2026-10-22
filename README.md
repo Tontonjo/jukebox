@@ -1,6 +1,6 @@
 # 🎵 Jukebox
 
-> **Jukebox 1.5.0** · doc rév. 4 · 22 octobre 2026
+> **Jukebox 1.5.0** · doc rév. 6 · 22 octobre 2026
 
 Jukebox web pour les soirées : un **écran de lecture** branché aux enceintes, un
 **panneau admin** qui commande tout, une **page invité** où les personnes
@@ -47,7 +47,6 @@ remplaçant les valeurs par les vôtres :
 docker run -d --name jukebox --restart unless-stopped \
   -p 3000:3000 \
   -e ADMIN_PASSWORD=monmotdepasse \
-  -e PUBLIC_URL=http://192.168.1.50:3000 \
   -e NAVIDROME_URL=http://192.168.1.100:4533 \
   -e NAVIDROME_USER=admin \
   -e NAVIDROME_PASS=password \
@@ -59,9 +58,11 @@ docker run -d --name jukebox --restart unless-stopped \
 
 Puis ouvrir `http://IP-DE-LA-MACHINE:3000` (lecteur), `/admin` et `/guest`.
 
-- `PUBLIC_URL` : adresse de la machine **hôte** vue depuis le réseau. Dans un
-  conteneur, l'adresse détectée seule est interne à Docker et le QR code serait
-  faux.
+- Adresse du QR code : automatique. Il reprend l'adresse par laquelle l'écran
+  de lecture a été ouvert, il suffit donc de l'ouvrir par l'adresse réseau de
+  la machine. Si l'écran est ouvert en `localhost`, ajouter
+  `-e PUBLIC_URL=http://IP-DE-LA-MACHINE:3000` : sinon le conteneur ne connaît
+  que son adresse interne Docker et le QR code serait faux.
 - `NAVIDROME_URL` : un Navidrome sur la même machine se joint avec
   `http://host.docker.internal:4533`, en ajoutant
   `--add-host=host.docker.internal:host-gateway` sous Linux.
@@ -97,7 +98,6 @@ services:
       - "3000:3000"
     environment:
       ADMIN_PASSWORD: monmotdepasse
-      PUBLIC_URL: http://192.168.1.50:3000
       NAVIDROME_URL: http://192.168.1.100:4533
       NAVIDROME_USER: admin
       NAVIDROME_PASS: password
