@@ -1,0 +1,3502 @@
+// ============================================================
+//  Jukebox — serveur
+//  Version : 1.5.0 (2026-10-20)
+//    1.5.0 : Cache Soulseek. Un morceau joue est copie dans un cache
+//            (SOULSEEK_CACHE_DIR, ./cache par defaut) limite a
+//            SOULSEEK_CACHE_MAX_MB (1024 par defaut, 0 = desactive).
+//            Redemande, il demarre sans telechargement et ressort dans la
+//            recherche. Au-dela de la limite, les morceaux utilises le
+//            moins recemment sont supprimes. Le cache survit aux
+//            redemarrages (index.json).
+//    1.4.0 :Paroles : les morceaux Navidrome utilisent d'abord les
+//            paroles du fichier (tags ou .lrc voisin), lues par
+//            getLyricsBySongId (Navidrome 0.49+). LRCLIB ne sert plus que
+//            de complement. Une requete LRCLIB en echec (delai, reseau)
+//            ne coupe plus toute la recherche : on passe a la suivante.
+//    1.3.0 :Webradio : titre et artiste en cours. Le relais du flux
+//            demande les metadonnees ICY (Icy-MetaData: 1), les retire du
+//            son avant de l'envoyer au lecteur et lit leur StreamTitle
+//            ("Artiste - Titre"). Ils remplacent le nom de la radio dans
+//            la piste d'attente. Sans info (flux HLS, radio muette), le
+//            nom de la radio reste affiche.
+//    1.2.2 — /api/qr accepte ?margin=0..4 (marge blanche en modules).
+//    1.2.1 — Webradio : prise en charge des flux HLS (.m3u8). La liste
+//            des segments est relayee et reecrite par le jukebox, le
+//            navigateur ne joint qu'une seule origine. hls.js est servi
+//            depuis les dependances du projet (/vendor/hls.js).
+//    1.2.0 — Musique d'attente : quand plus aucune chanson d'invité
+//            n'attend son tour, le jukebox joue une webradio ou une
+//            playlist Navidrome, choisie depuis le panneau admin.
+//            Une chanson ajoutée coupe la webradio sur-le-champ ;
+//            en mode playlist, elle attend la fin de la piste en cours.
+//            Nouvelles routes /api/admin/fallback, /api/stream/radio.
+//    1.1.0 — Retrait d'une chanson : l'invité récupère son crédit
+//            (place dans le quota + délai d'ajout remis à zéro), que le
+//            retrait vienne de l'organisateur ou de l'invité lui-même.
+//            Nouvelle route POST /api/playlist/remove.
+//    1.0.0 — Version initiale
+// ============================================================
+
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+const { execFile, spawn } = require('child_process');
+const net = require('net');
+const fs = require('fs');
+const os = require('os');
+const crypto = require('crypto');
+const path = require('path');
+const { Transform } = require('stream');
+const { qrSvg } = require('./qrcode');
+require('dotenv').config();
+
+console.log('=== ENV DEBUG ===');
+console.log('NAVIDROME_ENABLED =', process.env.NAVIDROME_ENABLED);
+console.log('NAVIDROME_URL     =', process.env.NAVIDROME_URL);
+console.log('NAVIDROME_USER    =', process.env.NAVIDROME_USER);
+console.log('NAVIDROME_PASS    =', process.env.NAVIDROME_PASS ? '***présent***' : 'ABSENT');
+console.log('SOULSEEK_ENABLED  =', process.env.SOULSEEK_ENABLED !== 'false');
+console.log('=================');
+
+const app = express();
+app.use(express.json());
+app.use(cors());
+app.use(express.static('public'));
+
+// ============= CONFIGURATION =============
+const CONFIG = {
+  // Admin
+  adminPassword: process.env.ADMIN_PASSWORD || 'admin123',
+
+  // Navidrome/Subsonic
+  navidrome: {
+    enabled: process.env.NAVIDROME_ENABLED === 'true',
+    url: process.env.NAVIDROME_URL || 'http://localhost:4533',
+    username: process.env.NAVIDROME_USER || '',
+    password: process.env.NAVIDROME_PASS || ''
+  },
+
+  // Soulseek : utilisé en repli quand Navidrome ne trouve rien.
+  // Passe par sockseek (https://github.com/fiso64/sockseek), en CLI ou en
+  // mode démon. Le démon est fortement recommandé : il garde la connexion
+  // Soulseek ouverte au lieu de se reconnecter à chaque recherche.
+  soulseek: {
+    enabled: process.env.SOULSEEK_ENABLED !== 'false',
+    sockseekPath: process.env.SOCKSEEK_PATH || 'sockseek',
+    // Vide = lancer sockseek en autonome (plus lent, reconnexion à chaque fois).
+    // On distingue "non défini" (défaut) de "défini à vide" (autonome voulu).
+    remote: process.env.SOCKSEEK_REMOTE !== undefined
+      ? process.env.SOCKSEEK_REMOTE.trim()
+      : 'http://127.0.0.1:5030',
+    // Lancer le démon sockseek avec le jukebox, s'il n'écoute pas déjà.
+    autostart: process.env.SOCKSEEK_AUTOSTART !== 'false',
+    downloadDir: process.env.SOULSEEK_DOWNLOAD_DIR || path.join(__dirname, 'downloads'),
+    maxResults: parseInt(process.env.SOULSEEK_MAX_RESULTS || '10'),
+    // Temps que sockseek passe à collecter les réponses des pairs, et
+    // délai annoncé au client pour la barre de progression de recherche.
+    // Sa valeur par défaut (6 s côté sockseek) est courte : les pairs lents
+    // n'ont pas le temps de répondre et la recherche paraît vide. Réglable
+    // à chaud depuis le panneau admin (Réglages > Délai de recherche
+    // Soulseek), ou au démarrage via SOULSEEK_SEARCH_TIME (ms).
+    searchTimeMs: parseInt(process.env.SOULSEEK_SEARCH_TIME || '20000'),
+    downloadTimeoutMs: parseInt(process.env.SOULSEEK_DOWNLOAD_TIMEOUT || '180') * 1000,
+    maxConcurrentDownloads: parseInt(process.env.SOULSEEK_MAX_DOWNLOADS || '2'),
+    // Supprimer le fichier dès que la lecture du morceau est terminée
+    deleteAfterPlay: process.env.SOULSEEK_DELETE_AFTER_PLAY !== 'false',
+    // Cache des morceaux joues : dossier hors des telechargements (vide a
+    // chaque demarrage) et taille maximale en Mo (0 = pas de cache).
+    cacheDir: process.env.SOULSEEK_CACHE_DIR || path.join(__dirname, 'cache'),
+    cacheMaxBytes: (parseInt(process.env.SOULSEEK_CACHE_MAX_MB || '1024', 10) || 0) * 1024 * 1024,
+    // Soulseek bannit 30 min au-delà de ~34 recherches / 220 s : on reste en deçà
+    searchRateLimit: parseInt(process.env.SOULSEEK_RATE_LIMIT || '30'),
+    searchRateWindowMs: 220 * 1000,
+    // Renseigné au démarrage
+    version: null
+  },
+
+  // Musique d'attente : ce qui joue quand plus aucune chanson d'invité
+  // n'attend son tour. Réglée depuis le panneau admin ; ces valeurs ne
+  // sont que le point de départ au premier démarrage.
+  //   mode 'off'      : silence, comportement d'origine
+  //   mode 'radio'    : flux webradio, coupé net dès qu'une chanson arrive
+  //   mode 'playlist' : playlist Navidrome, la piste en cours va au bout
+  fallback: {
+    mode: ['off', 'radio', 'playlist'].includes(process.env.FALLBACK_MODE)
+      ? process.env.FALLBACK_MODE : 'off',
+    radioUrl: process.env.FALLBACK_RADIO_URL || '',
+    radioName: process.env.FALLBACK_RADIO_NAME || '',
+    // Flux HLS (.m3u8) : une liste de segments, pas du son. Le lecteur doit
+    // le savoir pour passer par hls.js au lieu de le donner tel quel à
+    // <audio>. Renseigné tout seul à l'enregistrement de l'adresse.
+    radioHls: process.env.FALLBACK_RADIO_HLS === 'true',
+    playlistId: process.env.FALLBACK_PLAYLIST_ID || '',
+    playlistName: '',
+    shuffle: process.env.FALLBACK_SHUFFLE === 'true'
+  },
+
+  // Jukebox settings
+  // Fondu entre deux chansons, en secondes. 0 = enchaînement sec.
+  // Le morceau sortant baisse sur cette durée, le suivant monte sur la même.
+  fadeSeconds: Math.min(15, Math.max(0, parseFloat(process.env.FADE_SECONDS || '3') || 0)),
+  maxSongsPerUser: parseInt(process.env.MAX_SONGS_PER_USER || '3'),
+  cooldownMinutes: parseInt(process.env.COOLDOWN_MINUTES || '5'),
+  // Fenêtre glissante du quota : une chanson libère sa place après ce délai.
+  // 0 = quota définitif (seul l'admin peut réinitialiser).
+  quotaWindowMinutes: parseFloat(process.env.QUOTA_WINDOW_MINUTES || '60'),
+  sessionDuration: parseInt(process.env.SESSION_DURATION || '120') // minutes
+};
+
+// ============= ÉTAT EN MÉMOIRE =============
+const state = {
+  playlist: [],
+  currentTrackIndex: 0,
+  isPlaying: false,
+  users: new Map(), // userId -> { id, name, addedSongs: [], lastAddTime, createdAt }
+  adminTokens: new Set(),
+  playbackTime: 0,
+  // Incremente a chaque saut demande par l'admin : l'ecran de lecture
+  // n'applique une position que lorsque ce compteur change.
+  seekSeq: 0,
+  trackStartedAt: 0,
+  // Une chanson d'invité est la source en cours (par opposition a la
+  // musique d'attente, qui prend le relais quand la file est a sec).
+  guestActive: false,
+  // Pause demandee par l'organisateur : elle fige tout, y compris l'attente.
+  adminPaused: false,
+  // Musique d'attente. `track` est la piste qu'elle joue en ce moment,
+  // `handOver` signale qu'une chanson attend la fin de cette piste.
+  fallback: {
+    playing: false,
+    track: null,
+    queue: [],        // pistes de la playlist Navidrome d'attente
+    index: 0,
+    loadedFrom: null, // identifiant de la playlist actuellement chargee
+    handOver: false,
+    error: null,
+    radioMeta: null   // { brut, artiste, titre } lu dans le flux webradio
+  },
+  sessionId: crypto.randomBytes(8).toString('hex')
+};
+
+// ============= UTILISATEURS =============
+function generateUserId() {
+  return crypto.randomBytes(6).toString('hex');
+}
+
+function normalizeName(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ');
+}
+
+function findUserById(userId) {
+  if (!userId) return null;
+  return state.users.get(String(userId)) || null;
+}
+
+// Cle de comparaison : insensible a la casse, aux accents et aux espaces multiples
+function nameKey(name) {
+  return normalizeName(name)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+// ---- Codes d'accès ----
+// L'invité se connecte avec son seul code : celui-ci doit donc identifier
+// une personne et une seule. Alphabet sans I, O, 0 ni 1 : un code se dicte
+// et se recopie sans confusion.
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function generatePassword(longueur = 6) {
+  const octets = crypto.randomBytes(longueur);
+  let code = '';
+  for (let i = 0; i < longueur; i++) code += CODE_ALPHABET[octets[i] % CODE_ALPHABET.length];
+  return code;
+}
+
+// Comparaison insensible à la casse et aux espaces de bord
+function passwordKey(password) {
+  return String(password == null ? '' : password).trim().toUpperCase();
+}
+
+function findUserByPassword(password) {
+  const cible = passwordKey(password);
+  if (!cible) return null;
+  for (const user of state.users.values()) {
+    if (passwordKey(user.password) === cible) return user;
+  }
+  return null;
+}
+
+function uniquePassword() {
+  let code;
+  do { code = generatePassword(); } while (findUserByPassword(code));
+  return code;
+}
+
+// Valide un code choisi par l'organisateur, ou en génère un
+function prepareUserPassword(demande, utilisateurCourant) {
+  if (demande === undefined || demande === null || String(demande).trim() === '') {
+    return { password: uniquePassword() };
+  }
+
+  const code = String(demande).trim();
+  if (code.length < 4) return { error: 'Code trop court (4 caractères minimum)' };
+  if (code.length > 40) return { error: 'Code trop long (40 caractères max)' };
+
+  const proprietaire = findUserByPassword(code);
+  if (proprietaire && proprietaire !== utilisateurCourant) {
+    return { error: `Ce code est déjà celui de ${proprietaire.name}` };
+  }
+
+  return { password: code };
+}
+
+function findUserByName(name) {
+  const target = nameKey(name);
+  if (!target) return null;
+  for (const user of state.users.values()) {
+    if (nameKey(user.name) === target) return user;
+  }
+  return null;
+}
+
+function createUser(name, password) {
+  const clean = normalizeName(name);
+  if (!clean) return { error: 'Nom vide' };
+  if (clean.length > 40) return { error: 'Nom trop long (40 caractères max)' };
+  if (findUserByName(clean)) return { error: 'Ce nom existe déjà' };
+
+  const code = prepareUserPassword(password);
+  if (code.error) return { error: code.error };
+
+  const user = {
+    id: generateUserId(),
+    name: clean,
+    password: code.password,   // c'est lui qui identifie l'invité
+    addedSongs: [],      // [{ id, at }] limité à la fenêtre glissante
+    totalAdded: 0,       // compteur cumulé, informatif
+    notices: [],         // messages à afficher à l'invité (ex : téléchargement échoué)
+    lastAddTime: 0,
+    createdAt: Date.now()
+  };
+  state.users.set(user.id, user);
+  return { user };
+}
+
+function adminUserView(user) {
+  const canAdd = canUserAddSong(user);   // purge aussi les chansons expirées
+  return {
+    id: user.id,
+    name: user.name,
+    password: user.password,   // l'organisateur doit pouvoir le redonner
+    addedSongs: user.addedSongs.length,
+    totalAdded: user.totalAdded,
+    maxSongs: CONFIG.maxSongsPerUser,
+    lastAddTime: user.lastAddTime,
+    createdAt: user.createdAt,
+    canAdd,
+    waitSeconds: canAdd.waitSeconds || 0
+  };
+}
+
+// Duree lisible : 45 s / 2 min 05 s
+function formatDuration(seconds) {
+  if (seconds < 60) return `${seconds} s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m} min ${s.toString().padStart(2, '0')} s`;
+}
+
+// ---- Messages destinés à un invité ----
+// Un invité ne regarde pas forcément sa page au moment où sa chanson échoue :
+// on garde le message une demi-heure, sa page le récupère à sa prochaine
+// synchronisation (toutes les 15 s).
+const NOTICE_TTL_MS = 30 * 60 * 1000;
+
+function addUserNotice(user, id, message) {
+  const notices = (user.notices || []).filter(n => n.id !== id);
+  notices.push({ id, message, at: Date.now() });
+  user.notices = notices.slice(-5);
+}
+
+function activeNotices(user) {
+  const cutoff = Date.now() - NOTICE_TTL_MS;
+  user.notices = (user.notices || []).filter(n => n.at > cutoff);
+  return user.notices;
+}
+
+// Rend à l'invité la place occupée par une chanson qui n'a jamais pu être
+// jouée : quota, compteur cumulé et cooldown (ce dernier suivait cet ajout,
+// il n'a plus lieu d'être).
+function refundUserCredit(track, message) {
+  const user = findUserById(track.addedById);
+  if (!user) return null;
+
+  const index = user.addedSongs.findIndex(entry => entry.id === track.id);
+  if (index !== -1) user.addedSongs.splice(index, 1);
+  user.totalAdded = Math.max(0, (user.totalAdded || 0) - 1);
+
+  user.lastAddTime = user.addedSongs.length
+    ? Math.max(...user.addedSongs.map(entry => entry.at))
+    : 0;
+
+  if (message) addUserNotice(user, track.id, message);
+  return user;
+}
+
+// Chansons encore comptées dans le quota. Au-delà de la fenêtre glissante,
+// une chanson libère sa place. Purge au passage pour ne rien accumuler.
+function activeSongs(user) {
+  if (CONFIG.quotaWindowMinutes <= 0) return user.addedSongs;
+
+  const cutoff = Date.now() - CONFIG.quotaWindowMinutes * 60 * 1000;
+  const active = user.addedSongs.filter(entry => entry.at > cutoff);
+  user.addedSongs = active;
+  return active;
+}
+
+function canUserAddSong(user) {
+  if (!user) return { allowed: false, reason: 'Utilisateur non autorisé', limit: 'unknown' };
+  const now = Date.now();
+  const active = activeSongs(user);
+
+  // Quota : nombre de chansons dans la fenêtre glissante
+  if (active.length >= CONFIG.maxSongsPerUser) {
+    if (CONFIG.quotaWindowMinutes > 0 && active.length > 0) {
+      const oldest = Math.min(...active.map(entry => entry.at));
+      const freeAt = oldest + CONFIG.quotaWindowMinutes * 60 * 1000;
+      const waitSeconds = Math.max(1, Math.ceil((freeAt - now) / 1000));
+      return {
+        allowed: false,
+        limit: 'quota',
+        waitSeconds,
+        reason: `Quota atteint : une place se libère dans ${formatDuration(waitSeconds)}`
+      };
+    }
+
+    // Fenêtre désactivée (ou quota à 0) : seul l'organisateur peut débloquer
+    return {
+      allowed: false,
+      limit: 'quota',
+      reason: 'Nombre maximum de chansons atteint'
+    };
+  }
+
+  // Cooldown : délai minimum entre deux ajouts
+  const cooldownMs = CONFIG.cooldownMinutes * 60 * 1000;
+  const elapsed = now - user.lastAddTime;
+  if (user.lastAddTime > 0 && elapsed < cooldownMs) {
+    const waitSeconds = Math.ceil((cooldownMs - elapsed) / 1000);
+    return {
+      allowed: false,
+      limit: 'cooldown',
+      waitSeconds,
+      reason: `Attendre encore ${formatDuration(waitSeconds)} avant d'ajouter une nouvelle chanson`
+    };
+  }
+
+  return { allowed: true };
+}
+
+// ============= AUTH =============
+function extractToken(req) {
+  const header = req.headers.authorization || '';
+  if (header.startsWith('Bearer ')) return header.slice(7);
+  return req.headers['x-admin-token'] || req.query.token || '';
+}
+
+function requireAdmin(req, res, next) {
+  const token = extractToken(req);
+  if (token && state.adminTokens.has(token)) return next();
+  return res.status(401).json({ error: 'Session admin invalide' });
+}
+
+// ============= NAVIDROME / SUBSONIC API =============
+// Subsonic s'authentifie à chaque requête : un sel tiré au sort et le
+// md5 du mot de passe salé. Les jetons n'expirent pas, on peut donc les
+// coller dans une URL de flux ou de pochette.
+function navidromeAuth() {
+  const salt = crypto.randomBytes(8).toString('hex');
+  const token = crypto.createHash('md5')
+    .update(CONFIG.navidrome.password + salt)
+    .digest('hex');
+
+  return {
+    u: CONFIG.navidrome.username,
+    t: token,
+    s: salt,
+    v: '1.12.0',
+    c: 'jukebox'
+  };
+}
+
+// Appel d'une méthode de l'API. Lève une erreur parlante plutôt que de
+// renvoyer un objet vide : l'organisateur doit savoir ce qui cloche.
+async function navidromeCall(endpoint, params) {
+  if (!CONFIG.navidrome.enabled) throw new Error('Navidrome est désactivé');
+
+  const auth = navidromeAuth();
+  const response = await axios.get(`${CONFIG.navidrome.url}/rest/${endpoint}`, {
+    params: Object.assign({}, auth, params, { f: 'json' }),
+    timeout: 15000
+  });
+
+  const body = response.data && response.data['subsonic-response'];
+  if (!body) throw new Error('réponse Navidrome illisible');
+  if (body.status === 'failed') {
+    throw new Error((body.error && body.error.message) || 'Navidrome a refusé la requête');
+  }
+
+  return { body, auth };
+}
+
+// Fiche d'un morceau, telle que la manipule le jukebox
+function navidromeSong(song, auth) {
+  const jeton = new URLSearchParams(auth).toString();
+
+  return {
+    source: 'navidrome',
+    id: song.id,
+    title: song.title,
+    artist: song.artist,
+    album: song.album,
+    duration: song.duration,
+    coverArt: song.coverArt
+      ? `${CONFIG.navidrome.url}/rest/getCoverArt?id=${song.coverArt}&${jeton}`
+      : null,
+    streamUrl: `${CONFIG.navidrome.url}/rest/stream?id=${song.id}&${jeton}`
+  };
+}
+
+async function searchNavidrome(query) {
+  if (!CONFIG.navidrome.enabled) return [];
+
+  try {
+    const { body, auth } = await navidromeCall('search3', { query });
+    const songs = (body.searchResult3 && body.searchResult3.song) || [];
+    return songs.map(song =>
+      Object.assign(navidromeSong(song, auth), { metadata: song }));
+  } catch (error) {
+    console.error('Navidrome search error:', error.message);
+    return [];
+  }
+}
+
+// Playlists de la bibliothèque, pour le choix de la musique d'attente
+async function navidromePlaylists() {
+  const { body } = await navidromeCall('getPlaylists');
+  const list = (body.playlists && body.playlists.playlist) || [];
+  return list.map(p => ({
+    id: String(p.id),
+    name: p.name,
+    songCount: p.songCount || 0,
+    duration: p.duration || 0
+  }));
+}
+
+// Contenu d'une playlist
+async function navidromePlaylist(id) {
+  const { body, auth } = await navidromeCall('getPlaylist', { id });
+  if (!body.playlist) throw new Error('Playlist introuvable');
+
+  return {
+    name: body.playlist.name || 'Playlist',
+    songs: (body.playlist.entry || []).map(song => navidromeSong(song, auth))
+  };
+}
+
+// ============= SOULSEEK (repli quand Navidrome ne trouve rien) =============
+// Recherche et téléchargement via sockseek. Les fichiers sont éphémères :
+// téléchargés à l'ajout, supprimés dès la fin de leur lecture.
+
+const SOULSEEK_DIR = path.resolve(CONFIG.soulseek.downloadDir);
+// Marge de sécurité (ms) accordée au processus sockseek au-delà du délai
+// de recherche configuré, avant de le tuer. Interne : n'affecte pas la
+// barre de progression annoncée au client.
+const SOULSEEK_PROCESS_OVERHEAD_MS = 20000;
+const AUDIO_EXTENSIONS = ['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.wma'];
+
+// id -> { link, title, artist, ... } : résultats récents, pour retrouver le
+// lien slsk:// à partir de l'identifiant court manipulé par les clients
+const soulseekResults = new Map();
+// id -> { status, file, error, startedAt }
+const downloads = new Map();
+
+let searchTimestamps = [];
+let downloadQueue = [];
+let activeDownloads = 0;
+let loggedSampleResult = false;
+let loggedRawOutput = false;
+
+function soulseekAvailable() {
+  return CONFIG.soulseek.enabled && !!CONFIG.soulseek.version;
+}
+
+function remoteArgs() {
+  return CONFIG.soulseek.remote ? ['--remote', CONFIG.soulseek.remote] : [];
+}
+
+function lastLine(text) {
+  const lines = String(text || '').trim().split('\n').filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : '';
+}
+
+function runSockseek(args, timeout, signal) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      CONFIG.soulseek.sockseekPath,
+      args,
+      // `signal` permet d'arreter sockseek si le client annule sa recherche
+      { timeout, maxBuffer: 16 * 1024 * 1024, signal },
+      (error, stdout, stderr) => {
+        // sockseek écrit parfois sur stderr tout en réussissant : on ne
+        // considère l'échec que si rien d'exploitable n'est sorti.
+        if (error && !String(stdout).trim()) {
+          return reject(new Error(lastLine(stderr) || error.message || 'échec de sockseek'));
+        }
+        resolve(String(stdout));
+      }
+    );
+  });
+}
+
+function detectSockseek() {
+  return new Promise(resolve => {
+    execFile(CONFIG.soulseek.sockseekPath, ['--version'], { timeout: 15000 },
+      (error, stdout) => resolve(error ? null : (lastLine(stdout) || 'présent')));
+  });
+}
+
+// ---- Démon sockseek ----
+// Le démon garde la connexion Soulseek ouverte : sans lui, chaque recherche
+// se reconnecte au réseau, ce qui prend des secondes. On le démarre donc avec
+// le jukebox, sauf s'il tourne déjà (systemd, lancement manuel, autre machine).
+
+let sockseekDaemon = null;
+
+function parseRemote(remote) {
+  try {
+    const url = new URL(remote);
+    return { host: url.hostname, port: parseInt(url.port, 10) || 5030 };
+  } catch (error) {
+    return null;
+  }
+}
+
+// Le démon répond-il déjà ? Une simple connexion TCP suffit à le savoir.
+function portOuvert(host, port, timeout = 1000) {
+  return new Promise(resolve => {
+    const socket = net.connect({ host, port });
+    const fin = ouvert => { socket.destroy(); resolve(ouvert); };
+    socket.setTimeout(timeout);
+    socket.once('connect', () => fin(true));
+    socket.once('timeout', () => fin(false));
+    socket.once('error', () => fin(false));
+  });
+}
+
+function journaliserSockseek(flux, prefixe) {
+  let reste = '';
+  flux.on('data', morceau => {
+    const lignes = (reste + morceau).split('\n');
+    reste = lignes.pop();
+    for (const ligne of lignes) {
+      if (ligne.trim()) console.log(`${prefixe} ${ligne.trim()}`);
+    }
+  });
+}
+
+async function startSockseekDaemon() {
+  if (!CONFIG.soulseek.autostart) return 'désactivé';
+  if (!CONFIG.soulseek.remote) return 'autonome';   // pas de démon voulu
+
+  const cible = parseRemote(CONFIG.soulseek.remote);
+  if (!cible) return 'adresse invalide';
+
+  const local = ['127.0.0.1', 'localhost', '::1', '0.0.0.0'].includes(cible.host);
+  if (!local) return 'distant';                     // le démon tourne ailleurs
+
+  if (await portOuvert(cible.host, cible.port)) return 'déjà lancé';
+
+  const hote = cible.host === 'localhost' ? '127.0.0.1' : cible.host;
+  const enfant = spawn(
+    CONFIG.soulseek.sockseekPath,
+    ['daemon', '--server-ip', hote, '--server-port', String(cible.port)],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+
+  sockseekDaemon = enfant;
+  journaliserSockseek(enfant.stdout, 'sockseek :');
+  journaliserSockseek(enfant.stderr, 'sockseek :');
+
+  enfant.on('error', error => {
+    console.error('sockseek : démarrage impossible —', error.message);
+    if (sockseekDaemon === enfant) sockseekDaemon = null;
+  });
+
+  enfant.on('exit', code => {
+    if (sockseekDaemon === enfant) {
+      sockseekDaemon = null;
+      console.error(`sockseek : le démon s'est arrêté (code ${code}).`
+        + ' Les recherches Soulseek repassent en mode autonome, plus lent.');
+    }
+  });
+
+  // On attend qu'il réponde avant de dire qu'il est prêt (20 s au plus)
+  for (let essai = 0; essai < 40; essai++) {
+    if (!sockseekDaemon) return null;               // mort-né
+    if (await portOuvert(cible.host, cible.port)) return 'lancé';
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+
+  return null;
+}
+
+function stopSockseekDaemon() {
+  const enfant = sockseekDaemon;
+  if (!enfant) return;
+
+  sockseekDaemon = null;   // l'arrêt est volontaire : pas de message d'alerte
+  try { enfant.kill('SIGTERM'); } catch (error) { /* déjà parti */ }
+}
+
+// ---- Recherche ----
+
+// Soulseek bannit temporairement au-delà d'un certain rythme de recherches
+function searchAllowed() {
+  const now = Date.now();
+  searchTimestamps = searchTimestamps.filter(t => now - t < CONFIG.soulseek.searchRateWindowMs);
+  return searchTimestamps.length < CONFIG.soulseek.searchRateLimit;
+}
+
+// sockseek peut sortir un tableau JSON, un objet, ou du JSON ligne par ligne
+function parseSockseekJson(stdout) {
+  const text = String(stdout).trim();
+  if (!text) return [];
+
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && Array.isArray(parsed.results)) return parsed.results;
+    if (parsed && typeof parsed === 'object') return [parsed];
+  } catch (error) { /* on tente le mode ligne par ligne */ }
+
+  const entries = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) entries.push(...parsed);
+      else entries.push(parsed);
+    } catch (error) { /* ligne non JSON : ignorée */ }
+  }
+  return entries;
+}
+
+function firstDefined() {
+  for (const value of arguments) {
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return undefined;
+}
+
+// Devine artiste et titre à partir du chemin partagé. Les partages Soulseek
+// suivent souvent "Artiste/Album/03 - Titre.mp3" ou "Artiste - Titre.mp3".
+const GENERIC_FOLDERS = new Set([
+  'music', 'musique', 'shared', 'share', 'partage', 'downloads', 'complete',
+  'mp3', 'flac', 'albums', 'media', 'audio', 'soulseek', 'documents'
+]);
+
+function guessMetadata(filePath) {
+  const segments = String(filePath || '').split(/[\\/]+/).filter(Boolean);
+  const base = segments.pop() || '';
+  const name = base.replace(/\.[a-z0-9]{2,5}$/i, '');
+
+  // Retire un éventuel numéro de piste en tête. On exige un séparateur
+  // explicite, ou un zéro initial ("01 Titre") : sans cette prudence,
+  // "99 Luftballons" perdrait son titre.
+  const cleaned = name
+    .replace(/^\s*\d{1,3}\s*[.\-_)]+\s*/, '')
+    .replace(/^\s*0\d\s+/, '')
+    .trim();
+  const parts = cleaned.split(/\s+-\s+/);
+
+  if (parts.length >= 2) {
+    return { artist: parts[0].trim(), title: parts.slice(1).join(' - ').trim() };
+  }
+
+  const title = cleaned || name;
+
+  // Pas d'artiste dans le nom du fichier : on remonte dans l'arborescence
+  for (let i = segments.length - 1; i >= 0 && i >= segments.length - 3; i--) {
+    const folder = segments[i].trim();
+    if (!folder || GENERIC_FOLDERS.has(folder.toLowerCase())) continue;
+
+    // "Artiste - Album (2013)" -> "Artiste"
+    const dash = folder.split(/\s+-\s+/);
+    if (dash.length >= 2) return { artist: dash[0].trim(), title };
+
+    // Dossier d'album : l'artiste est en général juste au-dessus
+    const parent = segments[i - 1];
+    if (parent && !GENERIC_FOLDERS.has(parent.trim().toLowerCase())) {
+      return { artist: parent.trim(), title };
+    }
+
+    // Un seul dossier utile : c'est probablement l'artiste
+    return { artist: folder, title };
+  }
+
+  return { artist: null, title };
+}
+
+// Lit une propriété quel que soit le style de nommage
+function pick(obj) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  for (let i = 1; i < arguments.length; i++) {
+    const value = obj[arguments[i]];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return undefined;
+}
+
+// sockseek renvoie { User: { Username, UploadSpeed, HasFreeUploadSlot },
+//                    File: { Filename, Length, Size, Bitrate } }
+// On accepte aussi une forme à plat, au cas où le format évoluerait.
+function normalizeSoulseekResult(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+
+  const file = entry.File || entry.file || entry;
+  const user = entry.User || entry.user || entry;
+
+  const username = firstDefined(
+    pick(user, 'Username', 'username', 'user', 'name'),
+    pick(entry, 'username', 'user', 'uploader')
+  );
+
+  const filePath = firstDefined(
+    pick(file, 'Filename', 'filename', 'FileName', 'Path', 'path', 'file', 'name'),
+    pick(entry, 'path', 'filename', 'file', 'fullPath')
+  );
+
+  let link = firstDefined(
+    pick(entry, 'link', 'slsk', 'slskLink', 'url'),
+    pick(file, 'Link', 'link')
+  );
+  if (!link && username && filePath) {
+    link = `slsk://${username}/${String(filePath).replace(/\\/g, '/')}`;
+  }
+  if (!link) return null;
+
+  const guessed = guessMetadata(filePath || link);
+  const title = firstDefined(pick(file, 'Title', 'title'), pick(entry, 'title', 'track'), guessed.title, 'Sans titre');
+  const artist = firstDefined(pick(file, 'Artist', 'artist'), pick(entry, 'artist'), guessed.artist, username, 'Inconnu');
+
+  const duration = Number(firstDefined(
+    pick(file, 'Length', 'length', 'Duration', 'duration', 'seconds'), 0)) || 0;
+  const bitrate = Number(firstDefined(
+    pick(file, 'Bitrate', 'bitrate', 'BitRate'), 0)) || 0;
+  const size = Number(firstDefined(
+    pick(file, 'Size', 'size', 'FileSize'), 0)) || 0;
+  const uploadSpeed = Number(firstDefined(
+    pick(user, 'UploadSpeed', 'uploadSpeed', 'speed'), 0)) || 0;
+
+  const freeSlotRaw = firstDefined(
+    pick(user, 'HasFreeUploadSlot', 'hasFreeUploadSlot', 'freeUploadSlot', 'FreeUploadSlot'));
+  const freeSlot = freeSlotRaw === undefined ? true : Boolean(freeSlotRaw);
+
+  return {
+    source: 'soulseek',
+    id: crypto.createHash('sha1').update(String(link)).digest('hex').slice(0, 12),
+    title: String(title),
+    artist: String(artist),
+    duration,
+    coverArt: null,
+    bitrate,
+    size,
+    format: (String(filePath || '').match(/\.([a-z0-9]{2,5})$/i) || [, ''])[1].toLowerCase(),
+    username: username ? String(username) : null,
+    uploadSpeed,
+    freeSlot,
+    slskLink: String(link)
+  };
+}
+
+// sockseek interprète "Artiste - Titre" comme une recherche de morceau, mais
+// une requête sans tiret comme une recherche d'ALBUM : il renvoie alors des
+// dossiers, inutilisables pour un jukebox. La syntaxe structurée "title=..."
+// force la recherche de morceau.
+function soulseekQuery(query) {
+  const clean = String(query).trim();
+
+  if (/\s+-\s+/.test(clean)) return clean;   // "Artiste - Titre" : tel quel
+
+  // Les propriétés sont séparées par des virgules : on neutralise , et =
+  return 'title=' + clean.replace(/[,=]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+async function searchSoulseek(query, signal) {
+  if (!soulseekAvailable()) return [];
+
+  if (!searchAllowed()) {
+    console.warn('Soulseek : limite de recherches atteinte, requête refusée');
+    return [];
+  }
+  searchTimestamps.push(Date.now());
+
+  const sent = soulseekQuery(query);
+
+  try {
+    const stdout = await runSockseek(
+      [sent, '--print', 'json-all',
+       '--search-timeout', String(CONFIG.soulseek.searchTimeMs)].concat(remoteArgs()),
+      // Marge de sécurité interne pour le processus (démarrage, parsing…),
+      // au-delà du délai de recherche lui-même. Purement technique : elle
+      // n'est jamais montrée à l'invité (cf. searchMaxDurationMs).
+      CONFIG.soulseek.searchTimeMs + SOULSEEK_PROCESS_OVERHEAD_MS,
+      signal
+    );
+
+    const entries = parseSockseekJson(stdout);
+
+    // Le format exact de sockseek peut évoluer : on garde une trace du
+    // premier résultat pour pouvoir corriger la correspondance des champs.
+    if (!loggedSampleResult && entries.length) {
+      loggedSampleResult = true;
+      console.log('Soulseek : exemple de résultat brut →',
+        JSON.stringify(entries[0]).slice(0, 500));
+    }
+
+    if (!entries.length) {
+      console.log(`Soulseek : aucun résultat pour « ${sent} »`);
+
+      // Sortie non vide mais illisible : la montrer est le seul moyen de
+      // corriger la correspondance des champs.
+      const raw = String(stdout).trim();
+      if (raw && !loggedRawOutput) {
+        loggedRawOutput = true;
+        console.log('Soulseek : sortie non reconnue →', raw.slice(0, 800));
+      }
+    }
+
+    const results = [];
+    const seen = new Set();
+
+    for (const entry of entries) {
+      const normalized = normalizeSoulseekResult(entry);
+      if (!normalized || seen.has(normalized.id)) continue;
+      if (normalized.format && !AUDIO_EXTENSIONS.includes('.' + normalized.format)) continue;
+
+      seen.add(normalized.id);
+      results.push(normalized);
+    }
+
+    // sockseek trie déjà selon ses préférences (format, débit...). On se
+    // contente de remonter les pairs ayant un créneau d'envoi libre : sans
+    // cela, le téléchargement reste en file d'attente chez l'autre.
+    results.sort((a, b) => (a.freeSlot === b.freeSlot) ? 0 : (a.freeSlot ? -1 : 1));
+
+    const selected = results.slice(0, CONFIG.soulseek.maxResults);
+    for (const track of selected) soulseekResults.set(track.id, track);
+
+    return selected;
+  } catch (error) {
+    if (signal && signal.aborted) {
+      console.log('Soulseek : recherche annulée par le client');
+      return [];
+    }
+    console.error('Soulseek search error:', explainSockseekError(error.message));
+    return [];
+  }
+}
+
+// Transforme les erreurs sockseek courantes en conseil actionnable
+function explainSockseekError(message) {
+  const text = String(message || '');
+
+  if (/not configured for Soulseek login|Configure username\/password/i.test(text)) {
+    return text +
+      "\n  → Le démon sockseek n'a pas d'identifiants Soulseek." +
+      '\n     Ajoutez dans ~/.config/sockseek/sockseek.conf :' +
+      '\n       username = votre-pseudo' +
+      '\n       password = votre-mot-de-passe' +
+      '\n     puis redémarrez le démon (sockseek daemon).';
+  }
+
+  if (/refused|ECONNREFUSED|could not connect/i.test(text)) {
+    return text +
+      `\n  → Démon injoignable sur ${CONFIG.soulseek.remote}.` +
+      '\n     Lancez-le (sockseek daemon --server-port 5030),' +
+      '\n     ou videz SOCKSEEK_REMOTE dans .env pour le mode autonome.';
+  }
+
+  if (/banned|too many searches|rate/i.test(text)) {
+    return text +
+      '\n  → Soulseek limite le rythme des recherches (bannissement ~30 min).' +
+      '\n     Baissez SOULSEEK_RATE_LIMIT dans le .env.';
+  }
+
+  return text;
+}
+
+// ---- Métadonnées et pochette embarquées ----
+// Une fois le fichier là, ses tags valent mieux que ce qu'on avait deviné
+// du nom de fichier : titre, artiste, et surtout la pochette.
+const COVER_EXTENSIONS = {
+  'image/jpeg': '.jpg', 'image/jpg': '.jpg', 'image/png': '.png',
+  'image/webp': '.webp', 'image/gif': '.gif'
+};
+
+async function readEmbeddedMetadata(file) {
+  // music-metadata est en ESM : import dynamique depuis ce module CommonJS
+  const mm = await import('music-metadata');
+  const parsed = await mm.parseFile(file, { duration: false, skipPostHeaders: true });
+  return parsed;
+}
+
+// Extrait la pochette à côté du fichier audio, renvoie son chemin ou null
+async function extractCover(parsed, dir) {
+  const pictures = (parsed.common && parsed.common.picture) || [];
+  if (!pictures.length) return null;
+
+  const picture = pictures[0];
+  const extension = COVER_EXTENSIONS[String(picture.format || '').toLowerCase()] || '.jpg';
+  const target = path.join(dir, 'cover' + extension);
+
+  fs.writeFileSync(target, Buffer.from(picture.data));
+  return target;
+}
+
+// ---- Doublons ----
+// Deux invités peuvent demander le même morceau sans le savoir, et la même
+// chanson se retrouve rarement sous un identifiant identique (Navidrome d'un
+// côté, plusieurs pairs Soulseek de l'autre). On compare donc aussi artiste et
+// titre, en ignorant casse, accents, ponctuation et mentions entre
+// parenthèses : « Bohemian Rhapsody (Remastered 2011) » et « Bohemian
+// Rhapsody » sont le même morceau pour une soirée.
+function titleKey(title) {
+  return String(title == null ? '' : title)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')   // (remastered), [live]...
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function trackKey(track) {
+  return `${titleKey(track && track.artist)}|${titleKey(track && track.title)}`;
+}
+
+// Renvoie la piste déjà présente dans la playlist, ou null
+function findPlaylistDuplicate(song) {
+  if (!song) return null;
+  const cle = trackKey(song);
+
+  return state.playlist.find(track =>
+    (track.source === song.source && track.id === song.id)
+    || (cle !== '|' && trackKey(track) === cle)
+  ) || null;
+}
+
+// ---- Téléchargement ----
+
+function downloadStatus(id) {
+  const entry = downloads.get(id);
+  return entry ? entry.status : 'absent';
+}
+
+function findAudioFile(dir) {
+  let best = null;
+
+  const walk = (current) => {
+    let items = [];
+    try { items = fs.readdirSync(current, { withFileTypes: true }); } catch (e) { return; }
+
+    for (const item of items) {
+      const full = path.join(current, item.name);
+      if (item.isDirectory()) { walk(full); continue; }
+
+      const ext = path.extname(item.name).toLowerCase();
+      if (!AUDIO_EXTENSIONS.includes(ext)) continue;
+
+      let size = 0;
+      try { size = fs.statSync(full).size; } catch (e) { continue; }
+      if (!best || size > best.size) best = { file: full, size };
+    }
+  };
+
+  walk(dir);
+  return best ? best.file : null;
+}
+
+function queueDownload(track) {
+  if (downloads.has(track.id)) return;
+  if (servirDepuisCache(track)) return;   // deja joue : pas de telechargement
+  if (!soulseekAvailable() || !track.slskLink) return;
+
+  downloads.set(track.id, { status: 'pending', file: null, error: null, startedAt: Date.now() });
+  downloadQueue.push(track);
+  pumpDownloads();
+}
+
+function pumpDownloads() {
+  while (activeDownloads < CONFIG.soulseek.maxConcurrentDownloads && downloadQueue.length) {
+    const track = downloadQueue.shift();
+    activeDownloads++;
+    runDownload(track).finally(() => {
+      activeDownloads--;
+      pumpDownloads();
+    });
+  }
+}
+
+async function runDownload(track) {
+  const entry = downloads.get(track.id);
+  if (!entry || entry.status === 'deleted') return;
+
+  entry.status = 'downloading';
+  const dir = path.join(SOULSEEK_DIR, track.id);
+
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+
+    await runSockseek(
+      [track.slskLink, '-p', dir].concat(remoteArgs()),
+      CONFIG.soulseek.downloadTimeoutMs
+    );
+
+    // Un autre thread a pu supprimer la piste entre-temps
+    if (downloads.get(track.id) !== entry || entry.status === 'deleted') return;
+
+    const file = findAudioFile(dir);
+    if (!file) throw new Error('aucun fichier audio téléchargé');
+
+    entry.file = file;
+    entry.status = 'ready';
+    console.log(`Soulseek : "${track.title}" prêt (${path.basename(file)})`);
+
+    await applyEmbeddedMetadata(track, entry, dir);
+  } catch (error) {
+    entry.status = 'failed';
+    entry.error = error.message;
+    console.error(`Soulseek : échec du téléchargement de "${track.title}" — ${explainSockseekError(error.message)}`);
+    removeDownloadDir(track.id);
+    handleFailedDownload(track, error.message);
+  }
+}
+
+// Complète la piste avec ce que contient réellement le fichier
+async function applyEmbeddedMetadata(track, entry, dir) {
+  let parsed;
+  try {
+    parsed = await readEmbeddedMetadata(entry.file);
+  } catch (error) {
+    console.error(`Métadonnées illisibles pour "${track.title}" — ${error.message}`);
+    return;
+  }
+
+  const tags = (parsed && parsed.common) || {};
+  const format = (parsed && parsed.format) || {};
+
+  // Les tags sont plus fiables que le nom de fichier, mais on ne remplace
+  // que ce qui est réellement renseigné.
+  const oldTitle = track.title;
+  const oldArtist = track.artist;
+
+  if (tags.title && tags.title.trim()) track.title = tags.title.trim();
+  if (tags.artist && tags.artist.trim()) track.artist = tags.artist.trim();
+  if (tags.album && tags.album.trim()) track.album = tags.album.trim();
+  if (format.duration > 0) track.duration = Math.round(format.duration);
+
+  try {
+    const cover = await extractCover(parsed, dir);
+    if (cover) {
+      entry.cover = cover;
+      track.coverArt = `/api/cover/soulseek/${track.id}`;
+      console.log(`Pochette : extraite pour "${track.title}"`);
+    }
+  } catch (error) {
+    console.error(`Pochette : extraction impossible — ${error.message}`);
+  }
+
+  // Les tags corrigent souvent ce que le nom de fichier avait mal deviné :
+  // on retente les paroles si elles avaient échoué, ou si l'identité a changé.
+  const identityChanged = track.title !== oldTitle || track.artist !== oldArtist;
+  if (track.lyricsState === 'none' || (identityChanged && track.lyricsState !== 'synced')) {
+    fetchLyricsFor(track);
+  }
+}
+
+function removeDownloadDir(id) {
+  const dir = path.join(SOULSEEK_DIR, id);
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (error) {
+    console.error(`Soulseek : suppression impossible (${id}) — ${error.message}`);
+  }
+}
+
+// Supprime le fichier local d'une piste : appelé dès la fin de sa lecture
+// forget : la piste quitte la playlist, plus rien à retenir d'elle.
+// Sinon on garde un marqueur 'deleted', que l'admin affiche.
+function discardDownload(id, forget) {
+  const entry = downloads.get(id);
+  if (!entry) return;
+
+  removeDownloadDir(id);
+  downloadQueue = downloadQueue.filter(t => t.id !== id);
+
+  // La pochette vivait dans le dossier supprimé
+  const track = state.playlist.find(t => t.source === 'soulseek' && t.id === id);
+  if (track) track.coverArt = null;
+
+  if (forget) {
+    downloads.delete(id);
+    return;
+  }
+
+  entry.status = 'deleted';
+  entry.file = null;
+  entry.cover = null;
+}
+
+// Retire une piste de la playlist en gardant le morceau courant sous les
+// yeux du lecteur, et libère sa copie locale.
+function removePlaylistIndex(index) {
+  if (index < 0 || index >= state.playlist.length) return null;
+
+  const [removed] = state.playlist.splice(index, 1);
+  if (removed && removed.source === 'soulseek') discardDownload(removed.id, true);
+
+  if (index < state.currentTrackIndex) state.currentTrackIndex -= 1;
+  if (state.currentTrackIndex >= state.playlist.length) {
+    state.currentTrackIndex = Math.max(0, state.playlist.length - 1);
+  }
+
+  // File vidée : plus aucune chanson d'invité ne joue, la musique
+  // d'attente peut reprendre la main.
+  if (!state.playlist.length) state.guestActive = false;
+  majAttente();
+
+  return removed;
+}
+
+// Téléchargement échoué : la piste est injouable, elle n'a rien à faire dans
+// la playlist. On la retire et on rend son crédit à l'invité.
+// L'erreur brute vise l'organisateur (et peut contenir le lien slsk://,
+// qui révèle le pseudo d'un pair) : l'invité reçoit une raison courte.
+function guestFailureReason(message) {
+  const text = String(message || '');
+  if (/aucun fichier audio/i.test(text)) return 'fichier reçu inutilisable';
+  if (/timed?\s?out|ETIMEDOUT|killed/i.test(text)) return 'la source ne répond plus';
+  if (/refused|ECONNREFUSED|could not connect|not configured|login/i.test(text)) {
+    return 'source momentanément indisponible';
+  }
+  return 'téléchargement impossible';
+}
+
+function handleFailedDownload(track, reason) {
+  // Plusieurs invités peuvent avoir demandé le même morceau : ils partagent
+  // le téléchargement, ils partagent donc l'échec. Une piste déjà jouée (ou
+  // en cours de lecture) a eu son tour : on n'y touche pas.
+  const doomed = state.playlist.filter(entry =>
+    entry.source === 'soulseek' && entry.id === track.id && !entry.played);
+
+  for (const entry of doomed) {
+    const index = state.playlist.indexOf(entry);
+    if (index === -1) continue;   // retirée entre-temps par l'admin
+
+    removePlaylistIndex(index);
+
+    const user = refundUserCredit(entry,
+      `« ${entry.title} » n'a pas pu être téléchargée (${guestFailureReason(reason)}). `
+      + 'Elle a été retirée de la playlist et votre crédit vous a été rendu.');
+
+    console.log(`Playlist : "${entry.title}" retirée (téléchargement échoué)`
+      + (user ? ` — crédit rendu à ${user.name}` : ''));
+  }
+}
+
+function discardPlayedTrack(track) {
+  if (!track || track.source !== 'soulseek') return;
+  mettreEnCache(track);   // avant la suppression : le fichier est encore la
+  if (!CONFIG.soulseek.deleteAfterPlay) return;
+
+  // Le meme morceau peut figurer deux fois dans la playlist (deux invites
+  // l'ont demande) : supprimer le fichier de celui qui vient de finir
+  // couperait la lecture de celui qui commence, puisqu'ils le partagent.
+  const current = state.playlist[state.currentTrackIndex];
+  if (current && current.source === 'soulseek' && current.id === track.id) return;
+
+  discardDownload(track.id);
+}
+
+// ============= CACHE SOULSEEK =============
+// Un morceau Soulseek joue est copie dans un cache borne (1 Go par defaut).
+// Redemande, il demarre aussitot sans nouveau telechargement, et il ressort
+// dans la recherche des invites. Au-dela de la limite, les morceaux utilises
+// le moins recemment sont supprimes. Le cache survit aux redemarrages.
+// Index : <cacheDir>/index.json, une entree par morceau :
+//   { title, artist, album, duration, fichier, pochette, taille,
+//     ajouteLe, dernierUsage, slskLink, username }
+
+const CACHE_DIR = path.resolve(CONFIG.soulseek.cacheDir);
+const CACHE_INDEX = path.join(CACHE_DIR, 'index.json');
+let cacheIndex = {};
+let cacheActif = false;
+
+// Plus strict que trackKey : les mentions entre parentheses comptent, un
+// remix ne doit pas etre servi a la place de l'original.
+const netCache = v => String(v == null ? '' : v).toLowerCase().normalize('NFD')
+  .replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+const cleCache = track => `${netCache(track && track.artist)}|${netCache(track && track.title)}`;
+const idCache = cle => 'cache-' + crypto.createHash('sha1').update(cle).digest('hex').slice(0, 12);
+
+function chargerCache() {
+  cacheActif = false;
+  if (CONFIG.soulseek.cacheMaxBytes <= 0) return;
+
+  // Le dossier des telechargements est vide a chaque demarrage : le cache
+  // ne doit surtout pas s'y trouver.
+  if (CACHE_DIR === SOULSEEK_DIR || CACHE_DIR.startsWith(SOULSEEK_DIR + path.sep)) {
+    console.error('Cache : SOULSEEK_CACHE_DIR est dans le dossier des téléchargements, cache désactivé');
+    return;
+  }
+
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    cacheIndex = fs.existsSync(CACHE_INDEX)
+      ? JSON.parse(fs.readFileSync(CACHE_INDEX, 'utf8'))
+      : {};
+  } catch (error) {
+    console.error('Cache : index illisible, cache repris à vide —', error.message);
+    cacheIndex = {};
+  }
+
+  // Fichier supprime a la main : l'entree n'a plus de raison d'etre
+  for (const [cle, e] of Object.entries(cacheIndex)) {
+    if (!e || !e.fichier || !fs.existsSync(path.join(CACHE_DIR, e.fichier))) delete cacheIndex[cle];
+  }
+
+  cacheActif = true;
+  evincerCache();   // la limite a pu baisser depuis le dernier lancement
+  sauverCache();
+}
+
+function sauverCache() {
+  try {
+    // Ecriture puis renommage : un arret brutal ne laisse pas d'index tronque
+    const temporaire = CACHE_INDEX + '.tmp';
+    fs.writeFileSync(temporaire, JSON.stringify(cacheIndex, null, 2));
+    fs.renameSync(temporaire, CACHE_INDEX);
+  } catch (error) {
+    console.error('Cache : enregistrement de l\'index impossible —', error.message);
+  }
+}
+
+const tailleCache = () => Object.values(cacheIndex).reduce((total, e) => total + (e.taille || 0), 0);
+
+function enMo(octets) {
+  return `${Math.round(octets / 1024 / 1024)} Mo`;
+}
+
+// Un fichier du cache en cours d'utilisation (joue ou en file) est intouchable
+function fichierUtilise(chemin) {
+  for (const entry of downloads.values()) {
+    if (entry.file === chemin) return true;
+  }
+  return false;
+}
+
+function supprimerDuCache(cle) {
+  const e = cacheIndex[cle];
+  if (!e) return;
+  for (const nom of [e.fichier, e.pochette]) {
+    if (!nom) continue;
+    try { fs.rmSync(path.join(CACHE_DIR, nom), { force: true }); } catch (error) { /* deja parti */ }
+  }
+  delete cacheIndex[cle];
+}
+
+// Libere de la place en commencant par les morceaux utilises le moins recemment
+function evincerCache() {
+  const limite = CONFIG.soulseek.cacheMaxBytes;
+  let total = tailleCache();
+  if (total <= limite) return;
+
+  const parAnciennete = Object.entries(cacheIndex)
+    .sort((a, b) => (a[1].dernierUsage || 0) - (b[1].dernierUsage || 0));
+
+  for (const [cle, e] of parAnciennete) {
+    if (total <= limite) break;
+    if (fichierUtilise(path.join(CACHE_DIR, e.fichier))) continue;
+    total -= e.taille || 0;
+    console.log(`Cache : "${e.artist} — ${e.title}" retiré pour faire de la place`);
+    supprimerDuCache(cle);
+  }
+}
+
+// Apres lecture : copie du fichier et de sa pochette dans le cache
+function mettreEnCache(track) {
+  if (!cacheActif) return;
+  const entry = downloads.get(track.id);
+  if (!entry || entry.status !== 'ready' || !entry.file) return;
+
+  const cle = cleCache(track);
+  if (cle === '|') return;
+
+  // Deja en cache (servi depuis le cache, ou rejoue) : on note l'usage
+  if (cacheIndex[cle]) {
+    cacheIndex[cle].dernierUsage = Date.now();
+    sauverCache();
+    return;
+  }
+
+  try {
+    const base = idCache(cle);
+    const fichier = base + path.extname(entry.file).toLowerCase();
+    const pochette = entry.cover ? `${base}-pochette${path.extname(entry.cover).toLowerCase()}` : null;
+    const taille = fs.statSync(entry.file).size + (entry.cover ? fs.statSync(entry.cover).size : 0);
+
+    if (taille > CONFIG.soulseek.cacheMaxBytes) return;   // ne tiendrait jamais
+
+    fs.copyFileSync(entry.file, path.join(CACHE_DIR, fichier));
+    if (pochette) fs.copyFileSync(entry.cover, path.join(CACHE_DIR, pochette));
+
+    cacheIndex[cle] = {
+      title: track.title,
+      artist: track.artist,
+      album: track.album || null,
+      duration: track.duration || 0,
+      fichier,
+      pochette,
+      taille,
+      ajouteLe: Date.now(),
+      dernierUsage: Date.now(),
+      slskLink: track.slskLink || null,
+      username: track.username || null
+    };
+
+    console.log(`Cache : "${track.artist} — ${track.title}" conservé (${enMo(tailleCache())} / ${enMo(CONFIG.soulseek.cacheMaxBytes)})`);
+    evincerCache();
+    sauverCache();
+  } catch (error) {
+    console.error(`Cache : impossible de conserver "${track.title}" — ${error.message}`);
+  }
+}
+
+// Morceau deja en cache : pret tout de suite, sans passer par Soulseek.
+// Le fichier est lu sur place ; le supprimer apres lecture ne touche que le
+// dossier de telechargement de la piste, jamais le cache.
+function servirDepuisCache(track) {
+  if (!cacheActif) return false;
+
+  const cle = track.cacheKey || cleCache(track);
+  const e = cacheIndex[cle];
+  if (!e) return false;
+
+  const fichier = path.join(CACHE_DIR, e.fichier);
+  if (!fs.existsSync(fichier)) {
+    supprimerDuCache(cle);
+    sauverCache();
+    return false;
+  }
+
+  const pochette = e.pochette && fs.existsSync(path.join(CACHE_DIR, e.pochette))
+    ? path.join(CACHE_DIR, e.pochette)
+    : null;
+
+  downloads.set(track.id, {
+    status: 'ready', file: fichier, cover: pochette, error: null,
+    startedAt: Date.now(), fromCache: true
+  });
+
+  if (e.duration > 0) track.duration = e.duration;
+  if (e.album) track.album = e.album;
+  if (pochette) track.coverArt = `/api/cover/soulseek/${track.id}`;
+
+  e.dernierUsage = Date.now();
+  sauverCache();
+  console.log(`Cache : "${e.artist} — ${e.title}" servi depuis le cache`);
+  return true;
+}
+
+// Morceaux du cache correspondant a une recherche : tous les mots demandes
+// doivent apparaitre dans l'artiste, le titre ou l'album.
+function chercherCache(query) {
+  if (!cacheActif) return [];
+  const mots = netCache(query).split(' ').filter(Boolean);
+  if (!mots.length) return [];
+
+  return Object.entries(cacheIndex)
+    .filter(([, e]) => {
+      const texte = netCache(`${e.artist} ${e.title} ${e.album || ''}`);
+      return mots.every(mot => texte.includes(mot));
+    })
+    .sort((a, b) => (b[1].dernierUsage || 0) - (a[1].dernierUsage || 0))
+    .slice(0, 10)
+    .map(([cle, e]) => {
+      const track = {
+        source: 'soulseek',
+        id: idCache(cle),
+        title: e.title,
+        artist: e.artist,
+        album: e.album,
+        duration: e.duration,
+        coverArt: null,
+        format: path.extname(e.fichier).slice(1),
+        cached: true,
+        cacheKey: cle,
+        slskLink: e.slskLink,
+        username: e.username
+      };
+      // Meme circuit qu'un resultat Soulseek : l'ajout le retrouve ici
+      soulseekResults.set(track.id, track);
+      return track;
+    });
+}
+
+// Repart d'un dossier propre : les restes d'une exécution précédente
+// n'ont aucune raison de survivre.
+function resetDownloadDir() {
+  try {
+    fs.rmSync(SOULSEEK_DIR, { recursive: true, force: true });
+    fs.mkdirSync(SOULSEEK_DIR, { recursive: true });
+  } catch (error) {
+    console.error('Soulseek : impossible de préparer le dossier de téléchargement —', error.message);
+  }
+}
+
+// Vue publique d'une piste : ni chemin local, ni lien slsk:// (il révèle
+// le pseudo d'un pair), mais l'état du téléchargement pour le lecteur.
+// includeLyrics : les paroles ne sont envoyées que pour le morceau en cours.
+// La playlist est interrogée toutes les 2 s par trois pages ; transporter le
+// texte de chaque titre à chaque fois serait du gâchis.
+function publicTrack(track, includeLyrics) {
+  const view = Object.assign({}, track);
+  delete view.slskLink;
+  delete view.localFile;
+
+  if (!includeLyrics) {
+    delete view.lyrics;
+    delete view.plainLyrics;
+  }
+
+  if (track.source === 'soulseek') {
+    const entry = downloads.get(track.id);
+    view.downloadStatus = entry ? entry.status : 'absent';
+    view.downloadError = entry ? entry.error : null;
+  }
+  return view;
+}
+
+// ============= PAROLES (LRCLIB) =============
+// LRCLIB indexe par artiste + titre + durée. Les titres venant de Soulseek
+// sortent de noms de fichiers : bruités, souvent suffixés. On nettoie, puis
+// on tente plusieurs requêtes de la plus précise à la plus large.
+
+const LRCLIB_BASE = process.env.LRCLIB_BASE || 'https://lrclib.net/api';
+const LYRICS_HEADERS = {
+  // LRCLIB demande de s'identifier
+  'User-Agent': 'Jukebox (https://github.com/fiso64/sockseek jukebox local)'
+};
+
+// Retire ce qui empêche la correspondance : mentions de qualité, éditions,
+// balises de release, extensions résiduelles.
+function cleanForLyrics(text) {
+  return String(text || '')
+    .replace(/\.[a-z0-9]{2,5}$/i, '')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\((?:official|lyric|audio|video|hd|hq|remaster[^)]*|explicit|clean)[^)]*\)/gi, ' ')
+    .replace(/\b(official\s+(music\s+)?video|lyrics?\s+video|audio\s+officiel)\b/gi, ' ')
+    .replace(/\b(320\s*kbps|flac|mp3|wav|24bit|16bit|44\.1|48khz)\b/gi, ' ')
+    .replace(/\bwww\.\S+/gi, ' ')
+    .replace(/[_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// "Calvin Harris & Dua Lipa" -> ["Calvin Harris & Dua Lipa", "Calvin Harris"]
+// "Artiste feat. X"          -> ["Artiste feat. X", "Artiste"]
+function artistVariants(artist) {
+  const base = cleanForLyrics(artist);
+  if (!base) return [];
+
+  const variants = [base];
+  const first = base
+    .split(/\s+(?:feat\.?|ft\.?|featuring|with|vs\.?|&|,|x)\s+/i)[0]
+    .trim();
+
+  if (first && first.toLowerCase() !== base.toLowerCase()) variants.push(first);
+  return variants;
+}
+
+// "One Kiss (Radio Edit)" -> ["One Kiss (Radio Edit)", "One Kiss"]
+function titleVariants(title) {
+  const base = cleanForLyrics(title);
+  if (!base) return [];
+
+  const variants = [base];
+  const stripped = base.replace(/\s*[\(\[][^\)\]]*[\)\]]\s*$/, '').trim();
+  if (stripped && stripped.toLowerCase() !== base.toLowerCase()) variants.push(stripped);
+  return variants;
+}
+
+// Une requete en echec ne doit pas arreter la recherche : /api/get est
+// parfois lent (LRCLIB interroge d'autres sources), et un seul delai
+// depasse faisait conclure "pas de paroles" sans tenter les suivantes.
+async function lrclibRequest(endpoint, params) {
+  try {
+    const response = await axios.get(`${LRCLIB_BASE}/${endpoint}`, {
+      params,
+      headers: LYRICS_HEADERS,
+      timeout: 10000,
+      validateStatus: status => status === 200 || status === 404
+    });
+    return response.status === 200 ? response.data : null;
+  } catch (error) {
+    console.error(`Paroles LRCLIB : /${endpoint} en echec (${error.message})`);
+    return null;
+  }
+}
+
+// Parmi plusieurs candidats, garder le plus plausible : paroles synchronisées
+// d'abord, puis la durée la plus proche de celle du morceau joué.
+function bestLyricsMatch(candidates, duration) {
+  const usable = (candidates || []).filter(c => c && (c.syncedLyrics || c.plainLyrics || c.instrumental));
+  if (!usable.length) return null;
+
+  return usable.sort((a, b) => {
+    const synced = (b.syncedLyrics ? 1 : 0) - (a.syncedLyrics ? 1 : 0);
+    if (synced !== 0) return synced;
+
+    if (duration > 0) {
+      const da = Math.abs((a.duration || 0) - duration);
+      const db = Math.abs((b.duration || 0) - duration);
+      if (da !== db) return da - db;
+    }
+    return 0;
+  })[0];
+}
+
+async function getLyrics(title, artist, duration) {
+  const titles = titleVariants(title);
+  const artists = artistVariants(artist);
+
+  if (!titles.length) return null;
+
+  try {
+    // 1. Correspondance exacte, la plus fiable quand la durée est connue
+    if (duration > 0 && artists.length) {
+      for (const t of titles) {
+        for (const a of artists) {
+          const exact = await lrclibRequest('get', {
+            track_name: t, artist_name: a, duration: Math.round(duration)
+          });
+          if (exact) {
+            const match = bestLyricsMatch([exact], duration);
+            if (match) return formatLyrics(match, title, artist);
+          }
+        }
+      }
+    }
+
+    // 2. Recherche par champs
+    for (const t of titles) {
+      for (const a of (artists.length ? artists : [undefined])) {
+        const params = a ? { track_name: t, artist_name: a } : { track_name: t };
+        const match = bestLyricsMatch(await lrclibRequest('search', params), duration);
+        if (match) return formatLyrics(match, title, artist);
+      }
+    }
+
+    // 3. Recherche libre, dernier recours
+    const query = cleanForLyrics(`${artists[0] || ''} ${titles[0]}`).trim();
+    if (query) {
+      const match = bestLyricsMatch(await lrclibRequest('search', { q: query }), duration);
+      if (match) return formatLyrics(match, title, artist);
+    }
+  } catch (error) {
+    console.error('Lyrics fetch error:', error.message);
+  }
+
+  return null;
+}
+
+// On ne fabrique plus d'horodatage pour des paroles non synchronisées :
+// inventer un défilement faux est pire que pas de défilement du tout.
+function formatLyrics(match, title, artist) {
+  if (match.instrumental) {
+    console.log(`Paroles : "${title}" est marqué instrumental sur LRCLIB`);
+    return { synced: null, plain: null, instrumental: true, source: lyricsCredit(match) };
+  }
+
+  if (match.syncedLyrics) {
+    console.log(`Paroles : "${title}" — synchronisées (${lyricsCredit(match)})`);
+    return { synced: match.syncedLyrics, plain: match.plainLyrics || null, instrumental: false, source: lyricsCredit(match) };
+  }
+
+  console.log(`Paroles : "${title}" — non synchronisées (${lyricsCredit(match)})`);
+  return { synced: null, plain: match.plainLyrics, instrumental: false, source: lyricsCredit(match) };
+}
+
+// ============= PAROLES (NAVIDROME) =============
+// Navidrome lit les paroles rangees dans le fichier (tags USLT / SYLT /
+// LYRICS) ou dans un .lrc a cote. getLyricsBySongId (extension
+// OpenSubsonic, Navidrome 0.49+) les rend ligne par ligne, avec leur
+// horodatage en millisecondes quand elles sont synchronisees.
+
+const deuxChiffres = n => String(n).padStart(2, '0');
+
+// Lignes structurees -> texte LRC, le format que lit l'ecran de lecture.
+// offset positif = paroles affichees plus tot (norme OpenSubsonic).
+function lignesEnLrc(lignes, offset) {
+  return lignes.map(ligne => {
+    const ms = Math.max(0, (Number(ligne.start) || 0) - (Number(offset) || 0));
+    const minutes = Math.floor(ms / 60000);
+    const secondes = Math.floor(ms / 1000) % 60;
+    const centiemes = Math.floor((ms % 1000) / 10);
+    return `[${deuxChiffres(minutes)}:${deuxChiffres(secondes)}.${deuxChiffres(centiemes)}]${ligne.value || ''}`;
+  }).join('\n');
+}
+
+const lignesEnTexte = lignes => lignes.map(ligne => ligne.value || '').join('\n');
+
+async function navidromeLyrics(entry) {
+  if (entry.source !== 'navidrome' || !CONFIG.navidrome.enabled) return null;
+
+  try {
+    const { body } = await navidromeCall('getLyricsBySongId', { id: entry.id });
+    const versions = ((body.lyricsList && body.lyricsList.structuredLyrics) || [])
+      .filter(v => Array.isArray(v.line) && v.line.length);
+
+    const synchronisee = versions.find(v => v.synced);
+    if (synchronisee) {
+      console.log(`Paroles : "${entry.title}" — synchronisées (Navidrome)`);
+      return {
+        synced: lignesEnLrc(synchronisee.line, synchronisee.offset),
+        plain: lignesEnTexte(synchronisee.line),
+        instrumental: false,
+        source: 'Navidrome'
+      };
+    }
+
+    if (versions.length) {
+      return { synced: null, plain: lignesEnTexte(versions[0].line), instrumental: false, source: 'Navidrome' };
+    }
+  } catch (error) {
+    // Navidrome trop ancien (methode inconnue) ou morceau introuvable :
+    // LRCLIB prend le relais.
+    console.error(`Paroles Navidrome : "${entry.title}" — ${error.message}`);
+  }
+  return null;
+}
+
+// Renseigne les paroles d'une entrée de playlist sans bloquer l'appelant.
+// Ordre : paroles synchronisees du fichier, puis LRCLIB, puis paroles non
+// synchronisees du fichier (plus fiables que celles trouvees par recherche).
+async function fetchLyricsFor(entry) {
+  try {
+    const duFichier = await navidromeLyrics(entry);
+    let lyrics = duFichier && duFichier.synced
+      ? duFichier
+      : await getLyrics(entry.title, entry.artist, entry.duration);
+    if (duFichier && (!lyrics || !lyrics.synced)) lyrics = duFichier;
+
+    if (!lyrics) {
+      entry.lyricsState = 'none';
+      console.log(`Paroles : rien trouvé pour "${entry.artist} — ${entry.title}"`);
+      return;
+    }
+
+    entry.lyrics = lyrics.synced;
+    entry.plainLyrics = lyrics.plain;
+    entry.lyricsSource = lyrics.source;
+    entry.lyricsState = lyrics.instrumental ? 'instrumental'
+      : (lyrics.synced ? 'synced' : 'plain');
+  } catch (error) {
+    entry.lyricsState = 'none';
+    console.error('Paroles : erreur —', error.message);
+  }
+}
+
+function lyricsCredit(match) {
+  return [match.artistName, match.trackName].filter(Boolean).join(' — ') || 'LRCLIB';
+}
+
+// ============= MUSIQUE D'ATTENTE =============
+// Elle occupe le silence quand plus aucune chanson d'invité n'attend son
+// tour : une webradio, ou une playlist Navidrome. Dès qu'une chanson est
+// ajoutée, la webradio est coupée net ; une piste de playlist, elle, va
+// au bout — sinon on couperait une chanson en plein milieu pour rien.
+//
+// Le serveur ne joue rien lui-même : il désigne la piste à jouer, l'écran
+// de lecture la joue et rend compte de sa fin, comme pour la playlist.
+
+const FALLBACK_STORE = process.env.FALLBACK_STORE
+  || path.join(__dirname, 'fallback.json');
+
+// Les réglages doivent survivre à un redémarrage : sans cela, l'organisateur
+// ressaisirait l'adresse de sa webradio à chaque relance.
+function chargerReglagesAttente() {
+  let brut;
+  try {
+    brut = JSON.parse(fs.readFileSync(FALLBACK_STORE, 'utf8'));
+  } catch (error) {
+    return;   // absent ou illisible : on garde les valeurs du .env
+  }
+
+  const f = CONFIG.fallback;
+  if (['off', 'radio', 'playlist'].includes(brut.mode)) f.mode = brut.mode;
+  if (typeof brut.radioUrl === 'string') f.radioUrl = brut.radioUrl;
+  if (typeof brut.radioName === 'string') f.radioName = brut.radioName;
+  if (typeof brut.radioHls === 'boolean') f.radioHls = brut.radioHls;
+  if (typeof brut.playlistId === 'string') f.playlistId = brut.playlistId;
+  if (typeof brut.playlistName === 'string') f.playlistName = brut.playlistName;
+  f.shuffle = Boolean(brut.shuffle);
+}
+
+function enregistrerReglagesAttente() {
+  const f = CONFIG.fallback;
+  try {
+    fs.writeFileSync(FALLBACK_STORE, JSON.stringify({
+      mode: f.mode,
+      radioUrl: f.radioUrl,
+      radioName: f.radioName,
+      radioHls: f.radioHls,
+      playlistId: f.playlistId,
+      playlistName: f.playlistName,
+      shuffle: f.shuffle
+    }, null, 2));
+  } catch (error) {
+    // Dossier en lecture seule (conteneur) : les réglages restent valables
+    // pour cette soirée, ils repartiront du .env au prochain démarrage.
+    console.error('Attente : réglages non enregistrés —', error.message);
+  }
+}
+
+// Une attente mal configurée ne doit pas laisser le lecteur tourner à vide
+function attenteConfiguree() {
+  const f = CONFIG.fallback;
+  if (f.mode === 'radio') return Boolean(f.radioUrl);
+  if (f.mode === 'playlist') return Boolean(f.playlistId) && CONFIG.navidrome.enabled;
+  return false;
+}
+
+// Première chanson d'invité qui n'a pas encore commencé, -1 s'il n'y en a plus
+function prochaineChanson() {
+  return state.playlist.findIndex(track => !track.played);
+}
+
+function melanger(liste) {
+  const copie = liste.slice();
+  for (let i = copie.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copie[i], copie[j]] = [copie[j], copie[i]];
+  }
+  return copie;
+}
+
+// La webradio n'est pas une piste : pas de durée, pas de fin annoncée.
+function pisteRadio() {
+  return appliquerTitreRadio({
+    source: 'radio',
+    id: 'radio',
+    title: '',
+    artist: '',
+    duration: 0,
+    live: true,
+    hls: Boolean(CONFIG.fallback.radioHls),
+    coverArt: null,
+    lyricsState: 'none'
+  });
+}
+
+// Titre et artiste de la piste radio : le morceau annoncé par le flux s'il
+// est connu, sinon le nom de la radio. `nowPlaying` dit à l'écran lequel
+// des deux il affiche.
+function appliquerTitreRadio(track) {
+  const nom = CONFIG.fallback.radioName || 'Webradio';
+  const meta = state.fallback.radioMeta;
+  track.title = meta ? meta.titre : nom;
+  track.artist = meta ? (meta.artiste || nom) : "Musique d'attente";
+  track.nowPlaying = Boolean(meta);
+  return track;
+}
+
+// ---- Métadonnées ICY (Icecast / Shoutcast) ----
+// Sur demande (Icy-MetaData: 1), le serveur radio glisse un bloc de texte
+// tous les `metaint` octets de son : 1 octet de longueur (x16), puis
+// "StreamTitle='Artiste - Titre';" complété par des zéros.
+
+// Extrait le StreamTitle d'un bloc. null si le bloc n'en contient pas.
+function lireStreamTitle(bloc) {
+  let texte = bloc.toString('utf8');
+  // Les vieux serveurs envoient du Latin-1 : l'UTF-8 y voit des caractères invalides
+  if (texte.includes('�')) texte = bloc.toString('latin1');
+  const trouve = texte.replace(/\0+$/, '').match(/StreamTitle='([\s\S]*?)';/);
+  return trouve ? trouve[1].trim() : null;
+}
+
+// "Artiste - Titre" -> { artiste, titre }. Sans séparateur, tout est le titre.
+function decouperTitre(brut) {
+  const sep = brut.indexOf(' - ');
+  if (sep <= 0) return { artiste: '', titre: brut };
+  return { artiste: brut.slice(0, sep).trim(), titre: brut.slice(sep + 3).trim() };
+}
+
+// Un nouveau StreamTitle est arrivé (chaîne vide = la radio n'annonce rien)
+function noterTitreRadio(url, brut) {
+  if (url !== CONFIG.fallback.radioUrl) return;   // flux d'une radio remplacée
+  const fb = state.fallback;
+  const ancien = fb.radioMeta ? fb.radioMeta.brut : '';
+  if ((brut || '') === ancien) return;
+
+  fb.radioMeta = brut ? Object.assign({ brut }, decouperTitre(brut)) : null;
+  console.log(`Webradio : ${brut || '(titre inconnu)'}`);
+  if (fb.track && fb.track.source === 'radio') appliquerTitreRadio(fb.track);
+}
+
+// Filtre le flux : laisse passer le son, retire les blocs de métadonnées
+// (sinon le lecteur les prendrait pour du son et crachoterait).
+function filtreIcy(metaint, surTitre) {
+  let resteSon = metaint;   // octets de son avant le prochain bloc
+  let bloc = null;          // bloc de métadonnées en cours de lecture
+  let lu = 0;
+
+  return new Transform({
+    transform(morceau, encodage, fini) {
+      const son = [];
+      let i = 0;
+
+      while (i < morceau.length) {
+        if (resteSon > 0) {
+          const n = Math.min(resteSon, morceau.length - i);
+          son.push(morceau.subarray(i, i + n));
+          i += n;
+          resteSon -= n;
+        } else if (!bloc) {
+          // Octet de longueur. 0 = rien de neuf depuis le dernier bloc.
+          const taille = morceau[i++] * 16;
+          if (taille) { bloc = Buffer.alloc(taille); lu = 0; }
+          else resteSon = metaint;
+        } else {
+          const n = Math.min(bloc.length - lu, morceau.length - i);
+          morceau.copy(bloc, lu, i, i + n);
+          i += n;
+          lu += n;
+          if (lu === bloc.length) {
+            const titre = lireStreamTitle(bloc);
+            if (titre !== null) surTitre(titre);
+            bloc = null;
+            resteSon = metaint;
+          }
+        }
+      }
+
+      if (son.length) this.push(son.length === 1 ? son[0] : Buffer.concat(son));
+      fini();
+    }
+  });
+}
+
+// Chargement de la playlist d'attente. Jamais attendu par l'appelant : le
+// lecteur interroge /api/playlist toutes les 2 s, il prendra la file dès
+// qu'elle sera là.
+let chargementAttente = null;
+let prochainEssaiAttente = 0;
+const ATTENTE_DELAI_REESSAI_MS = 30000;
+
+function chargerFileAttente() {
+  const f = CONFIG.fallback;
+  const fb = state.fallback;
+
+  if (fb.loadedFrom === f.playlistId && fb.queue.length) return chargementAttente;
+  if (chargementAttente) return chargementAttente;
+  // Navidrome injoignable : trois écrans interrogent le jukebox toutes les
+  // 2 s, inutile de le harceler pour autant.
+  if (Date.now() < prochainEssaiAttente) return null;
+
+  chargementAttente = navidromePlaylist(f.playlistId)
+    .then(({ name, songs }) => {
+      f.playlistName = name;
+      fb.queue = f.shuffle ? melanger(songs) : songs;
+      fb.index = 0;
+      fb.loadedFrom = f.playlistId;
+      fb.error = songs.length ? null : 'Cette playlist est vide';
+      prochainEssaiAttente = songs.length ? 0 : Date.now() + ATTENTE_DELAI_REESSAI_MS;
+      console.log(`Attente : playlist « ${name} » chargée (${songs.length} pistes)`);
+    })
+    .catch(error => {
+      fb.queue = [];
+      fb.loadedFrom = null;
+      fb.error = error.message;
+      prochainEssaiAttente = Date.now() + ATTENTE_DELAI_REESSAI_MS;
+      console.error('Attente : playlist indisponible —', error.message);
+    })
+    .finally(() => { chargementAttente = null; });
+
+  return chargementAttente;
+}
+
+// Désigne la piste que l'attente doit jouer maintenant
+function alimenterAttente() {
+  const fb = state.fallback;
+
+  if (CONFIG.fallback.mode === 'radio') {
+    fb.error = null;
+    if (!fb.track || fb.track.source !== 'radio') fb.track = pisteRadio();
+    else appliquerTitreRadio(fb.track);   // nom de la radio modifié entre-temps
+    return;
+  }
+
+  if (fb.loadedFrom !== CONFIG.fallback.playlistId || !fb.queue.length) {
+    chargerFileAttente();
+  }
+
+  const suivante = fb.queue[fb.index] || null;
+  if (suivante && (!fb.track || fb.track.id !== suivante.id)) {
+    fb.track = suivante;
+    // Les paroles défilent aussi pendant l'attente : même écran, même soin.
+    if (!suivante.lyricsState) {
+      suivante.lyricsState = 'pending';
+      fetchLyricsFor(suivante);
+    }
+  } else if (!suivante) {
+    fb.track = null;
+  }
+}
+
+function arreterAttente() {
+  const fb = state.fallback;
+  if (!fb.playing && !fb.track) return;
+  fb.playing = false;
+  fb.track = null;
+  fb.handOver = false;
+  fb.radioMeta = null;   // au retour de la radio, le morceau aura changé
+}
+
+// L'attente cède la place à une chanson d'invité
+function passerALaChanson(index) {
+  const track = state.playlist[index];
+  if (!track) return;
+
+  arreterAttente();
+  state.currentTrackIndex = index;
+  state.playbackTime = 0;
+  state.isPlaying = true;
+  state.guestActive = true;
+  state.trackStartedAt = Date.now();
+  track.played = true;
+
+  console.log(`Attente : « ${track.title} » prend le relais`);
+}
+
+// Décide qui doit jouer. Appelée après chaque changement de file ou de
+// lecture, et à chaque interrogation de /api/playlist : c'est le seul
+// endroit où l'attente démarre et s'arrête.
+function majAttente() {
+  const f = CONFIG.fallback;
+  const fb = state.fallback;
+
+  if (!attenteConfiguree()) { arreterAttente(); return; }
+  if (state.adminPaused) return;   // la pause fige tout, l'attente comprise
+
+  const attente = prochaineChanson();
+
+  if (fb.playing) {
+    if (attente === -1) { alimenterAttente(); return; }
+
+    // Une chanson attend son tour. La webradio n'a pas de fin : on la coupe.
+    // Une piste de playlist, elle, mérite d'aller jusqu'au bout.
+    if (f.mode === 'radio') passerALaChanson(attente);
+    else { fb.handOver = true; alimenterAttente(); }
+    return;
+  }
+
+  // Plus rien à jouer côté invités : l'attente prend le relais
+  if (attente === -1 && !state.guestActive) {
+    fb.playing = true;
+    fb.handOver = false;
+    state.isPlaying = true;
+    state.playbackTime = 0;
+    alimenterAttente();
+  }
+}
+
+// L'écran de lecture signale la fin d'une piste d'attente
+function attenteTerminee() {
+  const fb = state.fallback;
+  if (!fb.playing) return;
+
+  if (CONFIG.fallback.mode === 'playlist' && fb.queue.length) {
+    fb.index = (fb.index + 1) % fb.queue.length;
+  }
+
+  const attente = prochaineChanson();
+  if (attente !== -1) { passerALaChanson(attente); return; }
+
+  fb.handOver = false;
+  alimenterAttente();
+}
+
+// Piste d'attente précédente (bouton ⏮ quand l'attente joue)
+function attentePrecedente() {
+  const fb = state.fallback;
+  if (!fb.playing || CONFIG.fallback.mode !== 'playlist' || !fb.queue.length) return;
+  fb.index = (fb.index - 1 + fb.queue.length) % fb.queue.length;
+  alimenterAttente();
+}
+
+// Vue envoyée aux écrans. Le flux passe par le jukebox plutôt que par
+// l'adresse d'origine : même origine, sinon le visualiseur de l'écran de
+// lecture (Web Audio) coupe le son d'une source distante.
+function attenteView() {
+  const f = CONFIG.fallback;
+  const fb = state.fallback;
+  if (!fb.track) {
+    return {
+      mode: f.mode, configured: attenteConfiguree(), playing: fb.playing,
+      track: null, error: fb.error
+    };
+  }
+
+  const piste = publicTrack(fb.track, true);
+  delete piste.streamUrl;
+  delete piste.metadata;
+  piste.streamPath = fb.track.source === 'radio'
+    ? '/api/stream/radio'
+    : `/api/stream/attente/${encodeURIComponent(fb.track.id)}`;
+
+  return {
+    mode: f.mode,
+    configured: attenteConfiguree(),
+    playing: fb.playing,
+    handOver: fb.handOver,
+    label: f.mode === 'radio'
+      ? (f.radioName || 'Webradio')
+      : (f.playlistName || 'Playlist Navidrome'),
+    track: piste,
+    error: fb.error
+  };
+}
+
+// ============= API PUBLIQUE =============
+
+// Admin auth (doit rester avant le middleware requireAdmin)
+app.post('/api/admin/auth', (req, res) => {
+  const { password } = req.body;
+  if (password === CONFIG.adminPassword) {
+    const token = crypto.randomBytes(32).toString('hex');
+    state.adminTokens.add(token);
+    res.json({
+      success: true,
+      token,
+      sessionId: state.sessionId
+    });
+  } else {
+    res.status(401).json({ success: false, error: 'Mot de passe incorrect' });
+  }
+});
+
+// Toutes les autres routes admin sont protégées
+app.use('/api/admin', requireAdmin);
+
+// Get config
+// ---- Adresse à afficher aux invités ----
+// Derrière un proxy ou un nom de domaine, PUBLIC_URL a le dernier mot.
+// Sinon on prend l'adresse du serveur sur le réseau local : c'est elle que
+// les téléphones doivent viser, pas « localhost ».
+function lanAddress() {
+  const prive = ip => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) ? 1 : 0;
+  const candidats = [];
+
+  for (const liste of Object.values(os.networkInterfaces())) {
+    for (const net of liste || []) {
+      const ipv4 = net.family === 'IPv4' || net.family === 4;
+      if (ipv4 && !net.internal) candidats.push(net.address);
+    }
+  }
+
+  candidats.sort((a, b) => prive(b) - prive(a));
+  return candidats[0] || 'localhost';
+}
+
+// L'adresse à donner aux invités est, en priorité, celle par laquelle le
+// navigateur a lui-même joint le jukebox : nom de machine, domaine derrière
+// un proxy, port particulier — tout est déjà dans la requête.
+function guestUrl(req) {
+  if (process.env.PUBLIC_URL) {
+    return process.env.PUBLIC_URL.replace(/\/+$/, '') + '/guest';
+  }
+
+  const brut = req && (req.headers['x-forwarded-host'] || req.headers.host) || '';
+  const hote = String(brut).split(',')[0].trim();
+  const nom = hote.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+
+  const valide = /^[A-Za-z0-9.\-:\[\]]+$/.test(hote);
+  const local = !nom || nom === 'localhost' || nom === '127.0.0.1' || nom === '::1';
+
+  if (valide && !local) {
+    const transmis = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+    const protocole = transmis || (req.secure ? 'https' : 'http');
+    return `${protocole}://${hote}/guest`;
+  }
+
+  // Page ouverte en « localhost » sur la machine du lecteur : un téléphone
+  // n'irait nulle part. On retombe sur l'adresse du réseau local.
+  return `http://${lanAddress()}:${process.env.PORT || 3000}/guest`;
+}
+
+// Budget maximal d'une recherche, communique au client pour la barre de
+// progression. Quand Soulseek est disponible, il est TOUJOURS interroge en
+// dernier recours si Navidrome ne trouve rien : le budget annonce est alors
+// exactement le delai de recherche Soulseek configure (CONFIG.soulseek.
+// searchTimeMs, reglable depuis le panneau admin), sans rien ajouter pour
+// Navidrome — ce dernier repond en pratique en une fraction de seconde, deja
+// largement couverte par la marge du delai Soulseek. La marge de securite
+// interne du processus (SOULSEEK_PROCESS_OVERHEAD_MS) ne rallonge jamais la
+// barre de progression, cf. commentaire sur runSockseek.
+// Si Soulseek n'est pas disponible, on retombe sur un budget fixe de 10 s
+// pour la seule recherche Navidrome.
+function searchMaxDurationMs() {
+  if (soulseekAvailable()) return CONFIG.soulseek.searchTimeMs;
+  return 10000;
+}
+
+app.get('/api/config', (req, res) => {
+  res.json({
+    maxSongsPerUser: CONFIG.maxSongsPerUser,
+    cooldownMinutes: CONFIG.cooldownMinutes,
+    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    searchMaxMs: searchMaxDurationMs(),
+    fadeSeconds: CONFIG.fadeSeconds,
+    guestUrl: guestUrl(req),
+    sources: {
+      navidrome: CONFIG.navidrome.enabled,
+      soulseek: soulseekAvailable()
+    },
+    fallbackMode: CONFIG.fallback.mode
+  });
+});
+
+// QR code de la page invité, affiché sur l'écran de lecture.
+// Genere a la volee, sans dependance ni acces internet.
+app.get('/api/qr', (req, res) => {
+  try {
+    const taille = Math.min(600, Math.max(120, parseInt(req.query.size, 10) || 320));
+    const m = parseInt(req.query.margin, 10);
+    const marge = Number.isNaN(m) ? 4 : Math.min(4, Math.max(0, m));
+    res.set('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.set('Cache-Control', 'no-store');   // l'adresse du serveur peut changer
+    res.send(qrSvg(guestUrl(req), taille, marge));
+  } catch (error) {
+    console.error('QR code : génération impossible —', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Connexion d'un utilisateur listé (par nom)
+// L'invité se connecte avec son seul code : pas de nom à saisir.
+app.post('/api/guest/login', (req, res) => {
+  const user = findUserByPassword(req.body && req.body.password);
+  if (!user) {
+    return res.status(403).json({ error: "Code inconnu — demandez le vôtre à l'organisateur" });
+  }
+  res.json({
+    userId: user.id,
+    name: user.name,
+    canAdd: canUserAddSong(user),
+    addedSongs: user.addedSongs.length,
+    maxSongs: CONFIG.maxSongsPerUser,
+    cooldownMinutes: CONFIG.cooldownMinutes,
+    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    notices: activeNotices(user)
+  });
+});
+
+// Infos d'un utilisateur
+app.get('/api/guest/info/:userId', (req, res) => {
+  const user = findUserById(req.params.userId);
+  if (!user) {
+    return res.status(403).json({ error: 'Utilisateur non autorisé' });
+  }
+
+  res.json({
+    userId: user.id,
+    name: user.name,
+    canAdd: canUserAddSong(user),
+    addedSongs: user.addedSongs.length,
+    maxSongs: CONFIG.maxSongsPerUser,
+    cooldownMinutes: CONFIG.cooldownMinutes,
+    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    notices: activeNotices(user)
+  });
+});
+
+// ---- Recherche et ajout : logique commune aux invités et à l'admin ----
+
+// La bibliothèque locale d'abord, Soulseek en secours quand elle ne donne rien.
+async function runSearch(query, signal) {
+  let results = await searchNavidrome(query);
+  let searchedSoulseek = false;
+
+  // Morceaux deja joues et gardes en cache, sauf s'ils sont dans Navidrome
+  const dansNavidrome = new Set(results.map(trackKey));
+  results = results.concat(chercherCache(query).filter(t => !dansNavidrome.has(trackKey(t))));
+
+  if (results.length === 0 && soulseekAvailable()) {
+    searchedSoulseek = true;
+    results = await searchSoulseek(query, signal);
+  }
+
+  return { results, searchedSoulseek };
+}
+
+// Vue client d'un résultat. Le lien slsk:// reste côté serveur : il révèle le
+// pseudo d'un pair. inPlaylist grisè le bouton « Ajouter » plutôt que de
+// laisser cliquer pour un refus.
+function searchResultView(track) {
+  const vue = publicTrack(track, false);
+  const doublon = findPlaylistDuplicate(track);
+  if (doublon) {
+    vue.inPlaylist = true;
+    vue.alreadyPlayed = Boolean(doublon.played);
+  }
+  return vue;
+}
+
+// Ajoute réellement le morceau à la file. `user` vaut null pour l'admin, qui
+// n'est soumis à aucun quota. L'erreur levée porte son propre statut HTTP.
+function addToPlaylist(song, user) {
+  const playlistEntry = {
+    ...song,
+    lyrics: null,           // renseigné en arrière-plan, voir plus bas
+    lyricsState: 'pending',
+    addedBy: user ? user.name : 'Admin',
+    addedById: user ? user.id : null,
+    addedAt: Date.now(),
+    played: false
+  };
+
+  // Le client n'envoie qu'une vue publique : on récupère le lien slsk://
+  // depuis les résultats de recherche gardés côté serveur.
+  if (song.source === 'soulseek') {
+    const known = soulseekResults.get(song.id);
+    if (!known) {
+      const expire = new Error('Résultat Soulseek expiré, relancez la recherche');
+      expire.status = 400;
+      throw expire;
+    }
+    playlistEntry.slskLink = known.slskLink;
+    playlistEntry.username = known.username;
+    if (known.cacheKey) playlistEntry.cacheKey = known.cacheKey;
+  }
+
+  state.playlist.push(playlistEntry);
+
+  // Les paroles ne doivent pas retarder la réponse : LRCLIB peut enchaîner
+  // plusieurs requêtes, on le fait en arrière-plan.
+  fetchLyricsFor(playlistEntry);
+
+  // Téléchargement anticipé : le morceau doit être prêt à son tour
+  if (playlistEntry.source === 'soulseek') queueDownload(playlistEntry);
+
+  // Une chanson vient d'arriver : la musique d'attente doit s'effacer,
+  // tout de suite s'il s'agit d'une webradio.
+  majAttente();
+
+  return playlistEntry;
+}
+
+// Search songs (réservé aux utilisateurs listés)
+app.get('/api/search', async (req, res) => {
+  const { q, userId } = req.query;
+
+  // Le client peut relancer ou annuler : on coupe alors sockseek au lieu de
+  // laisser tourner une recherche dont plus personne n'attend le resultat.
+  const abort = new AbortController();
+  let finished = false;
+  req.on('close', () => {
+    if (!finished) abort.abort();
+  });
+
+  const user = findUserById(userId);
+  if (!user) {
+    return res.status(403).json({ error: 'Utilisateur non autorisé' });
+  }
+
+  if (!q || q.length < 2) {
+    return res.status(400).json({ error: 'Query trop court' });
+  }
+
+  try {
+    const { results, searchedSoulseek } = await runSearch(q, abort.signal);
+
+    if (abort.signal.aborted) return;   // client parti : plus rien a renvoyer
+
+    finished = true;
+    res.json({
+      results: results.map(searchResultView),
+      searchedSoulseek,
+      canAdd: canUserAddSong(user),
+      userAddedCount: user.addedSongs.length
+    });
+  } catch (error) {
+    if (abort.signal.aborted) return;   // recherche annulee par le client
+    finished = true;
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add song to playlist (réservé aux utilisateurs listés)
+app.post('/api/playlist/add', async (req, res) => {
+  const { song, userId } = req.body;
+
+  if (!song) {
+    return res.status(400).json({ error: 'Song requis' });
+  }
+
+  const user = findUserById(userId);
+  if (!user) {
+    return res.status(403).json({ error: 'Utilisateur non autorisé' });
+  }
+
+  // Doublon : on refuse avant de toucher au quota de l'invité
+  const doublon = findPlaylistDuplicate(song);
+  if (doublon) {
+    const qui = doublon.addedBy ? ` par ${doublon.addedBy}` : '';
+    return res.status(409).json({
+      duplicate: true,
+      error: doublon.played
+        ? `« ${doublon.title} » est déjà passée ce soir`
+        : `« ${doublon.title} » est déjà dans la playlist, ajoutée${qui}`
+    });
+  }
+
+  const canAdd = canUserAddSong(user);
+  if (!canAdd.allowed) {
+    return res.status(429).json({ error: canAdd.reason });
+  }
+
+  try {
+    addToPlaylist(song, user);
+
+    user.addedSongs.push({ id: song.id, at: Date.now() });
+    user.totalAdded = (user.totalAdded || 0) + 1;
+    user.lastAddTime = Date.now();
+
+    res.json({
+      success: true,
+      playlistLength: state.playlist.length,
+      yourSongsCount: user.addedSongs.length
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
+// Retrait par l'invite d'une de ses propres chansons : erreur de selection,
+// mauvaise version, changement d'avis. Tant qu'elle n'est pas passee, elle ne
+// lui coute rien : quota et delai d'ajout lui sont rendus (meme logique qu'un
+// telechargement echoue). Il ne peut toucher qu'a ses chansons, et jamais a
+// celle qui joue.
+app.post('/api/playlist/remove', (req, res) => {
+  const { songId, userId } = req.body || {};
+
+  const user = findUserById(userId);
+  if (!user) {
+    return res.status(403).json({ error: 'Utilisateur non autorisé' });
+  }
+
+  const index = state.playlist.findIndex((track, i) =>
+    String(track.id) === String(songId)
+    && track.addedById === user.id
+    && !track.played
+    && i !== state.currentTrackIndex);
+
+  if (index === -1) {
+    return res.status(404).json({
+      error: 'Chanson introuvable : déjà jouée, en cours de lecture ou déjà retirée'
+    });
+  }
+
+  const removed = removePlaylistIndex(index);
+  // Pas de notice : l'invite vient de faire le geste, il n'a pas besoin
+  // qu'on le lui raconte.
+  refundUserCredit(removed);
+
+  console.log(`Playlist : "${removed.title}" retirée par ${user.name} — crédit rendu`);
+
+  res.json({
+    success: true,
+    playlistLength: state.playlist.length,
+    yourSongsCount: user.addedSongs.length,
+    canAdd: canUserAddSong(user)
+  });
+});
+
+// Get playlist
+app.get('/api/playlist', (req, res) => {
+  // Le morceau courant a été supprimé et on veut le rejouer : on le récupère.
+  // Conditionné à la lecture en cours, sinon la fin de playlist relancerait
+  // aussitôt le téléchargement qu'elle vient de supprimer.
+  const current = state.playlist[state.currentTrackIndex];
+  if (current && current.source === 'soulseek' && state.isPlaying
+      && downloadStatus(current.id) === 'deleted') {
+    downloads.delete(current.id);
+    queueDownload(current);
+  }
+
+  // C'est aussi le battement de coeur de la musique d'attente : elle
+  // demarre, cede la place ou avance ici, sans minuterie dediee.
+  majAttente();
+
+  res.json({
+    playlist: state.playlist.map((track, index) =>
+      publicTrack(track, index === state.currentTrackIndex)),
+    currentIndex: state.currentTrackIndex,
+    isPlaying: state.isPlaying,
+    playbackTime: state.playbackTime,
+    seekSeq: state.seekSeq,
+    fadeSeconds: CONFIG.fadeSeconds,
+    fallback: attenteView()
+  });
+});
+
+// ============= API ADMIN =============
+
+// Lire les réglages globaux
+app.get('/api/admin/settings', (req, res) => {
+  res.json({
+    maxSongsPerUser: CONFIG.maxSongsPerUser,
+    cooldownMinutes: CONFIG.cooldownMinutes,
+    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    fadeSeconds: CONFIG.fadeSeconds,
+    soulseekSearchSeconds: Math.round(CONFIG.soulseek.searchTimeMs / 1000)
+  });
+});
+
+// Modifier les réglages globaux (appliqués immédiatement, y compris aux quotas en cours)
+app.put('/api/admin/settings', (req, res) => {
+  const body = req.body || {};
+
+  if (body.maxSongsPerUser !== undefined) {
+    const max = Number(body.maxSongsPerUser);
+    if (!Number.isInteger(max) || max < 0 || max > 100) {
+      return res.status(400).json({ error: 'Max chansons : nombre entier entre 0 et 100' });
+    }
+    CONFIG.maxSongsPerUser = max;
+  }
+
+  if (body.cooldownMinutes !== undefined) {
+    const cd = Number(body.cooldownMinutes);
+    if (!Number.isFinite(cd) || cd < 0 || cd > 1440) {
+      return res.status(400).json({ error: 'Cooldown : entre 0 et 1440 minutes' });
+    }
+    CONFIG.cooldownMinutes = Math.round(cd * 100) / 100;
+  }
+
+  if (body.quotaWindowMinutes !== undefined) {
+    const win = Number(body.quotaWindowMinutes);
+    if (!Number.isFinite(win) || win < 0 || win > 10080) {
+      return res.status(400).json({ error: 'Fenêtre du quota : entre 0 et 10080 minutes (7 jours)' });
+    }
+    CONFIG.quotaWindowMinutes = Math.round(win * 100) / 100;
+  }
+
+  if (body.fadeSeconds !== undefined) {
+    const fade = Number(body.fadeSeconds);
+    if (!Number.isFinite(fade) || fade < 0 || fade > 15) {
+      return res.status(400).json({ error: 'Fondu : entre 0 et 15 secondes' });
+    }
+    CONFIG.fadeSeconds = Math.round(fade * 10) / 10;
+  }
+
+  if (body.soulseekSearchSeconds !== undefined) {
+    const delai = Number(body.soulseekSearchSeconds);
+    if (!Number.isFinite(delai) || delai < 5 || delai > 120) {
+      return res.status(400).json({ error: 'Délai de recherche Soulseek : entre 5 et 120 secondes' });
+    }
+    CONFIG.soulseek.searchTimeMs = Math.round(delai) * 1000;
+  }
+
+  console.log(`⚙ Réglages mis à jour : max=${CONFIG.maxSongsPerUser}, cooldown=${CONFIG.cooldownMinutes}min,`
+    + ` fenêtre=${CONFIG.quotaWindowMinutes}min, fondu=${CONFIG.fadeSeconds}s,`
+    + ` recherche Soulseek=${CONFIG.soulseek.searchTimeMs / 1000}s`);
+
+  res.json({
+    success: true,
+    maxSongsPerUser: CONFIG.maxSongsPerUser,
+    cooldownMinutes: CONFIG.cooldownMinutes,
+    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    fadeSeconds: CONFIG.fadeSeconds,
+    soulseekSearchSeconds: Math.round(CONFIG.soulseek.searchTimeMs / 1000)
+  });
+});
+
+// ---- Musique d'attente ----
+
+function reglagesAttenteView() {
+  const f = CONFIG.fallback;
+  const fb = state.fallback;
+
+  return {
+    mode: f.mode,
+    radioUrl: f.radioUrl,
+    radioName: f.radioName,
+    radioHls: f.radioHls,
+    playlistId: f.playlistId,
+    playlistName: f.playlistName,
+    shuffle: f.shuffle,
+    configured: attenteConfiguree(),
+    navidrome: CONFIG.navidrome.enabled,
+    hlsDisponible: hlsInstalle(),
+    status: {
+      playing: fb.playing,
+      handOver: fb.handOver,
+      queueLength: fb.queue.length,
+      position: fb.queue.length ? fb.index + 1 : 0,
+      title: fb.track ? fb.track.title : null,
+      artist: fb.track ? fb.track.artist : null,
+      error: fb.error
+    }
+  };
+}
+
+app.get('/api/admin/fallback', (req, res) => {
+  res.json(reglagesAttenteView());
+});
+
+// Playlists disponibles dans Navidrome, pour la liste déroulante
+app.get('/api/admin/fallback/playlists', async (req, res) => {
+  if (!CONFIG.navidrome.enabled) {
+    return res.status(400).json({ error: 'Navidrome est désactivé dans le .env' });
+  }
+
+  try {
+    res.json({ playlists: await navidromePlaylists() });
+  } catch (error) {
+    console.error('Navidrome : playlists indisponibles —', error.message);
+    res.status(502).json({ error: error.message });
+  }
+});
+
+// Interroge une adresse de flux : répond-elle du son, et de quelle sorte ?
+// Sert au bouton « Tester » comme à l'enregistrement du réglage.
+async function sonderFlux(url) {
+  const essai = await axios.get(url, {
+    responseType: 'stream',
+    timeout: 8000,
+    maxRedirects: 5,
+    headers: { 'User-Agent': 'Jukebox', 'Icy-MetaData': '0' },
+    validateStatus: status => status >= 200 && status < 400
+  });
+
+  const type = String(essai.headers['content-type'] || '').toLowerCase();
+  const nom = essai.headers['icy-name'] || null;
+  essai.data.destroy();   // on voulait juste savoir si ça répond
+
+  return { contentType: type, name: nom, hls: estHls(type, url) };
+}
+
+// Vérifie qu'une adresse de webradio répond bien du son, avant la soirée
+app.post('/api/admin/fallback/test', async (req, res) => {
+  const url = String((req.body && req.body.url) || '').trim();
+  if (!/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: 'Adresse invalide (http:// ou https://)' });
+  }
+
+  let sonde;
+  try {
+    sonde = await sonderFlux(url);
+  } catch (error) {
+    return res.status(502).json({ error: `Flux injoignable (${error.message})` });
+  }
+
+  if (!sonde.hls && !/audio|ogg|octet-stream|video\/mp2t/.test(sonde.contentType)) {
+    return res.status(400).json({
+      error: `Le serveur répond « ${sonde.contentType || 'type inconnu'} », pas du son.`
+           + ' Vérifiez que c\'est bien l\'adresse du flux, pas celle du site.'
+    });
+  }
+
+  res.json({
+    success: true,
+    contentType: sonde.contentType,
+    name: sonde.name,
+    hls: sonde.hls,
+    // hls.js absent : un flux .m3u8 ne sortira que sur Safari. Mieux vaut
+    // le dire maintenant qu'en pleine soirée.
+    hlsPret: sonde.hls ? hlsInstalle() : true
+  });
+});
+
+app.put('/api/admin/fallback', async (req, res) => {
+  const body = req.body || {};
+  const f = CONFIG.fallback;
+
+  const mode = body.mode === undefined ? f.mode : String(body.mode);
+  if (!['off', 'radio', 'playlist'].includes(mode)) {
+    return res.status(400).json({ error: 'Mode inconnu' });
+  }
+
+  const radioUrl = body.radioUrl === undefined ? f.radioUrl : String(body.radioUrl).trim();
+  const playlistId = body.playlistId === undefined ? f.playlistId : String(body.playlistId).trim();
+
+  if (mode === 'radio' && !/^https?:\/\//i.test(radioUrl)) {
+    return res.status(400).json({ error: 'Adresse du flux invalide (http:// ou https://)' });
+  }
+  if (mode === 'playlist') {
+    if (!CONFIG.navidrome.enabled) {
+      return res.status(400).json({ error: 'Navidrome est désactivé dans le .env' });
+    }
+    if (!playlistId) return res.status(400).json({ error: 'Choisissez une playlist' });
+  }
+
+  const ancienneListe = f.playlistId;
+  const ancienMelange = f.shuffle;
+  const ancienneRadio = f.radioUrl;
+
+  f.mode = mode;
+  f.radioUrl = radioUrl;
+  f.playlistId = playlistId;
+  if (body.radioName !== undefined) f.radioName = String(body.radioName).trim().slice(0, 60);
+  if (body.shuffle !== undefined) f.shuffle = Boolean(body.shuffle);
+  if (body.playlistName !== undefined) f.playlistName = String(body.playlistName).trim().slice(0, 80);
+
+  // Playlist changée (ou ordre de lecture) : la file d'attente est à refaire
+  if (f.playlistId !== ancienneListe || f.shuffle !== ancienMelange) {
+    state.fallback.queue = [];
+    state.fallback.index = 0;
+    state.fallback.loadedFrom = null;
+    state.fallback.error = null;
+    prochainEssaiAttente = 0;   // l'organisateur veut un essai tout de suite
+  }
+
+  // HLS ou son brut ? Le lecteur doit le savoir avant de jouer. On le
+  // demande au serveur de la radio ; s'il ne répond pas, l'extension de
+  // l'adresse tranche.
+  if (radioUrl !== ancienneRadio) state.fallback.radioMeta = null;   // titre d'une autre radio
+
+  if (mode === 'radio' && radioUrl !== ancienneRadio) {
+    f.radioHls = estHls(null, radioUrl);
+    try {
+      f.radioHls = (await sonderFlux(radioUrl)).hls;
+    } catch (error) {
+      console.error('Webradio : sondage impossible —', error.message);
+    }
+  }
+
+  // Changer de mode en pleine attente : on repart de la nouvelle source
+  if (state.fallback.playing) {
+    state.fallback.track = null;
+    if (!attenteConfiguree()) arreterAttente();
+  }
+
+  enregistrerReglagesAttente();
+  majAttente();
+
+  // La playlist est chargée maintenant : l'organisateur voit tout de suite
+  // si elle est lisible, au lieu de le découvrir au premier silence.
+  if (f.mode === 'playlist') {
+    await chargerFileAttente();
+    majAttente();   // la file est là : l'attente peut désigner sa piste
+  }
+
+  console.log(`⚙ Musique d'attente : ${f.mode === 'off' ? 'désactivée'
+    : f.mode === 'radio' ? `webradio ${f.radioUrl}${f.radioHls ? ' (HLS)' : ''}`
+    : `playlist « ${f.playlistName || f.playlistId} »${f.shuffle ? ' (aléatoire)' : ''}`}`);
+
+  res.json(Object.assign({ success: true }, reglagesAttenteView()));
+});
+
+// Liste complète des utilisateurs
+app.get('/api/admin/users', (req, res) => {
+  const users = Array.from(state.users.values())
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map(adminUserView);
+  res.json({ users, maxSongs: CONFIG.maxSongsPerUser, cooldownMinutes: CONFIG.cooldownMinutes });
+});
+
+// Ajouter un utilisateur
+app.post('/api/admin/users', (req, res) => {
+  const { name, password } = req.body || {};
+  const result = createUser(name, password);
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+  res.json({ success: true, user: adminUserView(result.user) });
+});
+
+// Renommer un utilisateur
+app.put('/api/admin/users/:id', (req, res) => {
+  const user = findUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+  const clean = normalizeName(req.body && req.body.name);
+  if (!clean) return res.status(400).json({ error: 'Nom vide' });
+  if (clean.length > 40) return res.status(400).json({ error: 'Nom trop long (40 caractères max)' });
+
+  const existing = findUserByName(clean);
+  if (existing && existing.id !== user.id) {
+    return res.status(400).json({ error: 'Ce nom existe déjà' });
+  }
+
+  user.name = clean;
+  res.json({ success: true, user: adminUserView(user) });
+});
+
+// Supprimer un utilisateur (révoque immédiatement son accès)
+app.delete('/api/admin/users/:id', (req, res) => {
+  const user = findUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+  state.users.delete(user.id);
+  res.json({ success: true });
+});
+
+// Réinitialiser le quota d'un utilisateur
+// Nouveau code d'accès : celui choisi par l'organisateur, ou un code tiré au sort
+app.post('/api/admin/users/:id/password', (req, res) => {
+  const user = findUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+  const code = prepareUserPassword(req.body && req.body.password, user);
+  if (code.error) return res.status(400).json({ error: code.error });
+
+  user.password = code.password;
+  console.log(`🔑 Nouveau code pour ${user.name}`);
+  res.json({ success: true, user: adminUserView(user) });
+});
+
+app.post('/api/admin/users/:id/reset', (req, res) => {
+  const user = findUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+  user.addedSongs = [];
+  user.totalAdded = 0;
+  user.lastAddTime = 0;
+  res.json({ success: true, user: adminUserView(user) });
+});
+
+// Applique une commande de lecture. Utilisee par l'admin (qui pilote) et par
+// l'ecran de lecture (qui signale seulement la fin d'une piste).
+function applyPlaybackAction(action, trackIndex, time) {
+  const previousIndex = state.currentTrackIndex;
+  const previousTrack = state.playlist[previousIndex];
+
+  // ⏭ et ⏮ pendant la musique d'attente, sans chanson en file : ils
+  // font defiler l'attente elle-meme plutot que de ne rien faire.
+  if (state.fallback.playing && prochaineChanson() === -1
+      && (action === 'next' || action === 'prev')) {
+    if (action === 'next') attenteTerminee();
+    else attentePrecedente();
+    state.adminPaused = false;
+    state.isPlaying = true;
+    return {
+      isPlaying: state.isPlaying,
+      currentIndex: state.currentTrackIndex,
+      playbackTime: state.playbackTime,
+      seekSeq: state.seekSeq
+    };
+  }
+
+  switch (action) {
+    case 'play':
+      state.isPlaying = true;
+      state.adminPaused = false;
+      // Relancer la lecture sur une file non vide, c'est reprendre la
+      // chanson : l'attente rend la main.
+      if (!state.fallback.playing && state.playlist[state.currentTrackIndex]) {
+        state.guestActive = true;
+      }
+      break;
+    case 'pause':
+      state.isPlaying = false;
+      state.adminPaused = true;
+      break;
+    case 'seek':
+      state.playbackTime = time;
+      state.seekSeq += 1;   // signale a l'ecran de lecture qu'il doit se caler
+      break;
+    case 'next':
+      arreterAttente();
+      state.adminPaused = false;
+      if (state.currentTrackIndex >= state.playlist.length - 1) {
+        // Dernier morceau terminé : on arrête et on libère sa copie locale.
+        // La musique d'attente prendra le relais si elle est configurée.
+        state.isPlaying = false;
+        state.playbackTime = 0;
+        state.guestActive = false;
+        if (previousTrack) {
+          previousTrack.played = true;
+          discardPlayedTrack(previousTrack);
+        }
+        break;
+      }
+      state.currentTrackIndex += 1;
+      state.playbackTime = 0;
+      state.isPlaying = true;
+      state.guestActive = true;
+      if (state.playlist[state.currentTrackIndex]) {
+        state.playlist[state.currentTrackIndex].played = true;
+      }
+      break;
+    case 'prev':
+      arreterAttente();
+      state.adminPaused = false;
+      state.currentTrackIndex = Math.max(state.currentTrackIndex - 1, 0);
+      state.playbackTime = 0;
+      state.isPlaying = true;
+      state.guestActive = Boolean(state.playlist[state.currentTrackIndex]);
+      break;
+    case 'goto':
+      arreterAttente();
+      state.adminPaused = false;
+      state.currentTrackIndex = trackIndex;
+      state.playbackTime = 0;
+      state.isPlaying = true;
+      state.guestActive = true;
+      if (state.playlist[state.currentTrackIndex]) {
+        state.playlist[state.currentTrackIndex].played = true;
+      }
+      break;
+  }
+
+  // On quitte un morceau Soulseek : sa copie locale n'a plus de raison d'être
+  if (state.currentTrackIndex !== previousIndex) {
+    discardPlayedTrack(previousTrack);
+
+    // Le morceau suivant doit être prêt : on relance son téléchargement
+    // s'il avait été supprimé lors d'un passage précédent.
+    const upcoming = state.playlist[state.currentTrackIndex];
+    if (upcoming && upcoming.source === 'soulseek' && downloadStatus(upcoming.id) === 'deleted') {
+      downloads.delete(upcoming.id);
+      queueDownload(upcoming);
+    }
+
+    state.trackStartedAt = Date.now();
+  }
+
+  // Le silence appelle la musique d'attente ; une chanson la renvoie.
+  majAttente();
+
+  return {
+    isPlaying: state.isPlaying,
+    currentIndex: state.currentTrackIndex,
+    playbackTime: state.playbackTime,
+    seekSeq: state.seekSeq
+  };
+}
+
+// Commandes de lecture : reservees a l'admin
+app.post('/api/admin/playback', (req, res) => {
+  const { action, trackIndex, time } = req.body;
+  res.json({ success: true, state: applyPlaybackAction(action, trackIndex, time) });
+});
+
+// L'ecran de lecture ne commande rien : il rend compte. Fin de morceau,
+// echec de lecture et position courante, pour la piste qu'il joue vraiment.
+app.post('/api/player/event', (req, res) => {
+  const { type, index, time, fallback } = req.body || {};
+
+  // Evenements de la musique d'attente : elle n'a pas de place dans la
+  // file, elle ne se repere donc pas par un index.
+  if (fallback) {
+    if (!state.fallback.playing) {
+      return res.json({ ignored: true, currentIndex: state.currentTrackIndex });
+    }
+
+    if (type === 'position') {
+      if (typeof time === 'number' && time >= 0) state.playbackTime = time;
+      return res.json({ success: true });
+    }
+
+    if (type === 'ended' || type === 'failed') {
+      const piste = state.fallback.track;
+      console.log(`Attente : ${type === 'ended' ? 'fin' : 'échec'} de « `
+        + `${(piste || {}).title || '?'} »`);
+
+      // Une piste illisible ne doit pas boucler : on passe a la suivante.
+      attenteTerminee();
+      return res.json({ success: true, fallback: attenteView() });
+    }
+
+    return res.status(400).json({ error: 'Évènement inconnu' });
+  }
+
+  // Un evenement qui ne concerne pas la piste en cours est perime
+  if (typeof index !== 'number' || index !== state.currentTrackIndex
+      || state.fallback.playing) {
+    return res.json({ ignored: true, currentIndex: state.currentTrackIndex });
+  }
+
+  if (type === 'position') {
+    if (typeof time === 'number' && time >= 0) state.playbackTime = time;
+    return res.json({ success: true });
+  }
+
+  if (type === 'ended' || type === 'failed') {
+    // Garde-fou : personne ne fait defiler la playlist en enchainant les
+    // requetes, un morceau doit avoir eu au moins quelques secondes.
+    if (state.trackStartedAt && Date.now() - state.trackStartedAt < 3000) {
+      return res.json({ ignored: true, currentIndex: state.currentTrackIndex });
+    }
+
+    console.log(`Lecture : ${type === 'ended' ? 'fin' : 'échec'} de « `
+      + `${(state.playlist[index] || {}).title || '?'} » → piste suivante`);
+    return res.json({ success: true, state: applyPlaybackAction('next') });
+  }
+
+  res.status(400).json({ error: 'Évènement inconnu' });
+});
+
+// Recherche (admin) : mêmes sources que côté invité, sans code ni quota
+app.get('/api/admin/search', async (req, res) => {
+  const { q } = req.query;
+
+  // Le client peut relancer ou annuler : on coupe alors sockseek au lieu de
+  // laisser tourner une recherche dont plus personne n'attend le resultat.
+  const abort = new AbortController();
+  let finished = false;
+  req.on('close', () => {
+    if (!finished) abort.abort();
+  });
+
+  if (!q || q.length < 2) {
+    return res.status(400).json({ error: 'Query trop court' });
+  }
+
+  try {
+    const { results, searchedSoulseek } = await runSearch(q, abort.signal);
+
+    if (abort.signal.aborted) return;   // client parti : plus rien a renvoyer
+
+    finished = true;
+    res.json({
+      results: results.map(searchResultView),
+      searchedSoulseek
+    });
+  } catch (error) {
+    if (abort.signal.aborted) return;   // recherche annulee par le client
+    finished = true;
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Ajout à la playlist (admin) : autant de chansons que voulu, aucun quota,
+// aucun délai d'attente. Le doublon reste refusé — deux entrées partageraient
+// le même téléchargement, que la suppression de l'une effacerait sous l'autre.
+app.post('/api/admin/playlist/add', (req, res) => {
+  const song = req.body && req.body.song;
+
+  if (!song) {
+    return res.status(400).json({ error: 'Song requis' });
+  }
+
+  const doublon = findPlaylistDuplicate(song);
+  if (doublon) {
+    const qui = doublon.addedBy ? ` par ${doublon.addedBy}` : '';
+    return res.status(409).json({
+      duplicate: true,
+      error: doublon.played
+        ? `« ${doublon.title} » est déjà passée ce soir`
+        : `« ${doublon.title} » est déjà dans la playlist, ajoutée${qui}`
+    });
+  }
+
+  try {
+    const entry = addToPlaylist(song, null);
+    res.json({
+      success: true,
+      playlistLength: state.playlist.length,
+      title: entry.title
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
+// Déplacer une piste dans la file (admin)
+app.post('/api/admin/playlist/move', (req, res) => {
+  const from = parseInt(req.body && req.body.from, 10);
+  let to = parseInt(req.body && req.body.to, 10);
+
+  if (!Number.isInteger(from) || from < 0 || from >= state.playlist.length) {
+    return res.status(400).json({ error: 'Position de départ invalide' });
+  }
+  if (!Number.isInteger(to)) {
+    return res.status(400).json({ error: 'Position d\'arrivée invalide' });
+  }
+
+  to = Math.max(0, Math.min(to, state.playlist.length - 1));
+  if (from === to) {
+    return res.json({ success: true, currentIndex: state.currentTrackIndex });
+  }
+
+  const [moved] = state.playlist.splice(from, 1);
+  state.playlist.splice(to, 0, moved);
+
+  // Le morceau en cours doit rester le morceau en cours, où qu'il atterrisse
+  const current = state.currentTrackIndex;
+  if (from === current) {
+    state.currentTrackIndex = to;
+  } else if (from < current && to >= current) {
+    state.currentTrackIndex = current - 1;
+  } else if (from > current && to <= current) {
+    state.currentTrackIndex = current + 1;
+  }
+
+  res.json({ success: true, currentIndex: state.currentTrackIndex });
+});
+
+// Remove song from playlist (admin)
+// Une chanson retiree avant d'avoir ete jouee n'a rien coute a la soiree :
+// l'invite qui l'avait ajoutee recupere sa place dans le quota et son delai
+// d'ajout. Une chanson deja passee (ou en cours) a eu son tour, elle reste
+// comptee.
+app.delete('/api/admin/playlist/:index', (req, res) => {
+  const index = parseInt(req.params.index);
+  if (index >= 0 && index < state.playlist.length) {
+    const enLecture = index === state.currentTrackIndex;
+    const removed = removePlaylistIndex(index);
+
+    if (removed && removed.addedById && !removed.played && !enLecture) {
+      const user = refundUserCredit(removed,
+        `« ${removed.title} » a été retirée de la playlist par l'organisateur. `
+        + 'Votre crédit vous a été rendu, vous pouvez ajouter une autre chanson.');
+      if (user) {
+        console.log(`Playlist : "${removed.title}" retirée par l'organisateur`
+          + ` — crédit rendu à ${user.name}`);
+      }
+    }
+
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: 'Song not found' });
+  }
+});
+
+// Clear playlist (admin) - conserve la liste des utilisateurs, remet les quotas à zéro
+app.post('/api/admin/playlist/clear', (req, res) => {
+  for (const track of state.playlist) {
+    if (track.source === 'soulseek') discardDownload(track.id, true);
+  }
+  state.playlist = [];
+  state.currentTrackIndex = 0;
+  state.isPlaying = false;
+  state.playbackTime = 0;
+  state.guestActive = false;
+  state.adminPaused = false;   // la soirée repart : l'attente reprend la main
+  majAttente();
+  for (const user of state.users.values()) {
+    user.addedSongs = [];
+    user.totalAdded = 0;
+    user.lastAddTime = 0;
+  }
+  res.json({ success: true });
+});
+
+// ============= STREAMING =============
+// Relais d'un flux distant. Le navigateur ne voit que le jukebox : même
+// origine (le visualiseur de l'écran de lecture couperait le son d'une
+// source distante), et une seule adresse à joindre pour les téléphones.
+async function relayerFlux(url, req, res, etiquette) {
+  // Le lecteur demande une plage d'octets (recherche dans le morceau,
+  // reprise après une coupure) : on la relaie telle quelle.
+  const headers = {};
+  if (req.headers.range) headers.Range = req.headers.range;
+
+  const proxyRes = await axios.get(url, {
+    responseType: 'stream',
+    headers,
+    // Surtout pas de timeout ici : le navigateur cesse de lire dès que son
+    // tampon est plein, parfois plusieurs minutes. Un timeout de socket
+    // coupait alors le flux en plein morceau, et la lecture s'arrêtait
+    // brutalement au milieu de la chanson.
+    timeout: 0,
+    maxRedirects: 5,
+    validateStatus: status => status >= 200 && status < 400
+  });
+
+  res.status(proxyRes.status);
+  for (const name of ['content-type', 'content-length', 'content-range',
+                      'accept-ranges', 'etag', 'last-modified']) {
+    const value = proxyRes.headers[name];
+    if (value !== undefined) res.set(name, value);
+  }
+  if (proxyRes.headers['accept-ranges'] === undefined) res.set('Accept-Ranges', 'bytes');
+
+  const upstream = proxyRes.data;
+
+  // Onglet fermé ou changement de piste : on libère la connexion distante
+  res.on('close', () => upstream.destroy());
+
+  upstream.on('error', error => {
+    console.error(`${etiquette} : flux interrompu —`, error.message);
+    if (!res.headersSent) res.status(502).json({ error: 'Flux interrompu' });
+    else res.destroy();
+  });
+
+  return upstream.pipe(res);
+}
+
+// ---- HLS (.m3u8) ----
+// Un flux HLS n'est pas du son : c'est une liste de segments, renouvelée en
+// continu. On la relaie en réécrivant chaque adresse pour qu'elle repasse
+// par le jukebox — le navigateur ne joint ainsi qu'une seule origine, et le
+// visualiseur de l'écran de lecture garde le droit d'écouter le son.
+
+const HLS_TYPES = /mpegurl|m3u8/i;
+const HLS_TTL_MS = 30 * 60 * 1000;
+
+// Seules les adresses vues dans une liste qu'on a servie sont relayables :
+// sans cette liste, la route deviendrait un relais ouvert vers n'importe quoi.
+const hlsAutorisees = new Map();   // id -> { url, expire }
+
+function hlsInscrire(url) {
+  const id = crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
+
+  if (hlsAutorisees.size > 5000) {
+    const maintenant = Date.now();
+    for (const [cle, v] of hlsAutorisees) {
+      if (v.expire < maintenant) hlsAutorisees.delete(cle);
+    }
+  }
+
+  hlsAutorisees.set(id, { url, expire: Date.now() + HLS_TTL_MS });
+  return `/api/stream/hls/${id}`;
+}
+
+function estHls(contentType, url) {
+  if (contentType && HLS_TYPES.test(contentType)) return true;
+  return /\.m3u8(\?|$)/i.test(String(url || ''));
+}
+
+// Sans hls.js, un flux .m3u8 ne sort que sur Safari, qui le lit nativement.
+function hlsInstalle() {
+  try {
+    require.resolve('hls.js/dist/hls.light.min.js');
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+// Réécrit les adresses d'une liste HLS : segments, sous-listes, clés.
+function reecrireHls(texte, base) {
+  const absolue = cible => {
+    try { return hlsInscrire(new URL(cible, base).toString()); }
+    catch (error) { return cible; }
+  };
+
+  return texte.split('\n').map(ligne => {
+    const nette = ligne.trim();
+    if (!nette) return ligne;
+
+    // Les attributs URI="..." des balises (clé de chiffrement, init, pistes)
+    if (nette.startsWith('#')) {
+      return ligne.replace(/URI="([^"]+)"/g, (tout, cible) => `URI="${absolue(cible)}"`);
+    }
+
+    return absolue(nette);   // segment ou sous-liste
+  }).join('\n');
+}
+
+async function servirListeHls(url, res) {
+  const reponse = await axios.get(url, {
+    responseType: 'text',
+    timeout: 15000,
+    maxRedirects: 5,
+    headers: { 'User-Agent': 'Jukebox' },
+    validateStatus: status => status >= 200 && status < 400
+  });
+
+  // L'adresse finale après redirections : c'est elle qui sert de base
+  // aux adresses relatives de la liste.
+  const base = (reponse.request && reponse.request.res && reponse.request.res.responseUrl) || url;
+
+  res.set('Content-Type', 'application/vnd.apple.mpegurl');
+  res.set('Cache-Control', 'no-store');
+  res.send(reecrireHls(String(reponse.data), base));
+}
+
+// Segment, sous-liste ou clé d'un flux HLS déjà servi
+app.get('/api/stream/hls/:id', async (req, res) => {
+  const entree = hlsAutorisees.get(req.params.id);
+  if (!entree || entree.expire < Date.now()) {
+    hlsAutorisees.delete(req.params.id);
+    return res.status(404).json({ error: 'Segment inconnu ou expiré' });
+  }
+
+  entree.expire = Date.now() + HLS_TTL_MS;   // flux encore écouté
+
+  try {
+    // Une sous-liste doit être réécrite à son tour, comme la liste maître
+    if (/\.m3u8(\?|$)/i.test(entree.url)) return await servirListeHls(entree.url, res);
+
+    await relayerFlux(entree.url, req, res, 'HLS');
+  } catch (error) {
+    console.error('HLS : segment injoignable —', error.message);
+    if (!res.headersSent) res.status(502).json({ error: error.message });
+  }
+});
+
+// hls.js, servi depuis les dépendances du projet : l'écran de lecture
+// tourne souvent sur un réseau local sans accès à Internet.
+app.get('/vendor/hls.js', (req, res) => {
+  let fichier;
+  try {
+    fichier = require.resolve('hls.js/dist/hls.light.min.js');
+  } catch (error) {
+    return res.status(404).json({
+      error: 'hls.js absent — lancez « npm install » pour lire les flux .m3u8'
+    });
+  }
+  res.set('Cache-Control', 'public, max-age=86400');
+  res.sendFile(fichier);
+});
+
+// Webradio d'attente. Un flux sans fin : ni plage d'octets, ni cache.
+app.get('/api/stream/radio', async (req, res) => {
+  const url = CONFIG.fallback.radioUrl;
+  if (!url) return res.status(404).json({ error: 'Aucune webradio configurée' });
+
+  try {
+    // Flux HLS : on sert la liste des segments, réécrite
+    if (CONFIG.fallback.radioHls) return await servirListeHls(url, res);
+
+    const proxyRes = await axios.get(url, {
+      responseType: 'stream',
+      timeout: 0,
+      maxRedirects: 5,
+      // On demande les métadonnées ICY (titre en cours) : elles arrivent
+      // mêlées au son, filtreIcy les retire avant l'envoi au lecteur.
+      headers: { 'User-Agent': 'Jukebox', 'Icy-MetaData': '1' },
+      validateStatus: status => status >= 200 && status < 400
+    });
+
+    // Adresse changée de nature depuis son enregistrement (redirection vers
+    // un .m3u8) : on bascule plutôt que de servir une liste comme du son.
+    if (estHls(proxyRes.headers['content-type'], url)) {
+      proxyRes.data.destroy();
+      CONFIG.fallback.radioHls = true;
+      return await servirListeHls(url, res);
+    }
+
+    res.status(200);
+    res.set('Content-Type', proxyRes.headers['content-type'] || 'audio/mpeg');
+    res.set('Cache-Control', 'no-store');
+
+    const upstream = proxyRes.data;
+    res.on('close', () => upstream.destroy());
+    upstream.on('error', error => {
+      console.error('Webradio : flux interrompu —', error.message);
+      if (!res.headersSent) res.status(502).json({ error: 'Flux interrompu' });
+      else res.destroy();
+    });
+
+    // icy-metaint absent : la radio n'envoie pas de métadonnées, le son passe tel quel
+    const metaint = parseInt(proxyRes.headers['icy-metaint'], 10);
+    if (metaint > 0) {
+      upstream.pipe(filtreIcy(metaint, brut => noterTitreRadio(url, brut))).pipe(res);
+    } else {
+      upstream.pipe(res);
+    }
+  } catch (error) {
+    console.error('Webradio : injoignable —', error.message);
+    state.fallback.error = `Webradio injoignable (${error.message})`;
+    if (!res.headersSent) res.status(502).json({ error: state.fallback.error });
+  }
+});
+
+// Piste de la playlist d'attente : elle n'est pas dans la file, elle a
+// donc sa propre adresse de lecture.
+app.get('/api/stream/attente/:id', async (req, res) => {
+  const piste = state.fallback.queue.find(t => String(t.id) === String(req.params.id));
+  if (!piste) return res.status(404).json({ error: 'Piste introuvable' });
+
+  try {
+    await relayerFlux(piste.streamUrl, req, res, 'Attente');
+  } catch (error) {
+    console.error('Attente : lecture impossible —', error.message);
+    if (!res.headersSent) res.status(502).json({ error: error.message });
+  }
+});
+
+app.get('/api/stream/:source/:id', async (req, res) => {
+  const { source, id } = req.params;
+
+  try {
+    if (source === 'navidrome') {
+      const song = state.playlist.find(s => s.source === 'navidrome' && s.id === id);
+      if (!song) return res.status(404).json({ error: 'Piste introuvable' });
+
+      return await relayerFlux(song.streamUrl, req, res, 'Navidrome');
+    }
+
+    if (source === 'soulseek') {
+      const entry = downloads.get(id);
+
+      if (!entry) {
+        return res.status(404).json({ error: 'Piste inconnue', status: 'absent' });
+      }
+
+      // Morceau rejoué après suppression : on le récupère à nouveau
+      if (entry.status === 'deleted') {
+        const track = state.playlist.find(t => t.source === 'soulseek' && t.id === id);
+        if (track) {
+          downloads.delete(id);
+          queueDownload(track);
+          return res.status(425).json({ error: 'Nouveau téléchargement', status: 'pending' });
+        }
+      }
+
+      if (entry.status === 'pending' || entry.status === 'downloading') {
+        // 425 Too Early : le lecteur réessaiera quand le fichier sera là
+        return res.status(425).json({
+          error: 'Téléchargement en cours',
+          status: entry.status
+        });
+      }
+
+      if (entry.status !== 'ready' || !entry.file) {
+        return res.status(404).json({
+          error: entry.error || 'Fichier indisponible',
+          status: entry.status
+        });
+      }
+
+      // sendFile gère l'en-tête Range : la barre de progression reste utilisable
+      return res.sendFile(entry.file, error => {
+        if (error && !res.headersSent) {
+          res.status(404).json({ error: 'Fichier illisible' });
+        }
+      });
+    }
+
+    res.status(400).json({ error: 'Source inconnue' });
+  } catch (error) {
+    console.error('Stream error:', error.message);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+// Pochette extraite d'un fichier Soulseek
+app.get('/api/cover/soulseek/:id', (req, res) => {
+  const entry = downloads.get(req.params.id);
+
+  if (!entry || !entry.cover) {
+    return res.status(404).json({ error: 'Pas de pochette' });
+  }
+
+  res.sendFile(entry.cover, error => {
+    if (error && !res.headersSent) res.status(404).end();
+  });
+});
+
+// Serve static files
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+app.get('/guest', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'guest.html'));
+});
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'player.html'));
+});
+
+// ============= START SERVER =============
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, async () => {
+  console.log(`🎵 Jukebox server running on port ${PORT}`);
+  console.log(`Admin: http://localhost:${PORT}/admin`);
+  console.log(`Guest: http://localhost:${PORT}/guest`);
+  // Le QR reprend l'adresse par laquelle l'écran de lecture est ouvert ;
+  // celle-ci ne sert que si cet écran est ouvert en « localhost ».
+  console.log(`Adresse invité sur le réseau local → ${guestUrl()}`);
+  console.log(`Player: http://localhost:${PORT}`);
+  console.log('\nConfiguration:');
+  console.log(`- Max songs per user: ${CONFIG.maxSongsPerUser}`);
+  console.log(`- Cooldown: ${CONFIG.cooldownMinutes} minutes`);
+  console.log(`- Fenêtre du quota: ${CONFIG.quotaWindowMinutes > 0 ? CONFIG.quotaWindowMinutes + ' minutes (glissant)' : 'désactivée (quota définitif)'}`);
+  console.log(`- Fondu entre les chansons: ${CONFIG.fadeSeconds > 0 ? CONFIG.fadeSeconds + ' s' : 'désactivé'}`);
+  console.log(`- Navidrome: ${CONFIG.navidrome.enabled}`);
+
+  // Musique d'attente : réglages du fichier, sinon ceux du .env
+  chargerReglagesAttente();
+  const attente = CONFIG.fallback;
+  console.log(`- Musique d'attente: ${attente.mode === 'off' ? 'désactivée'
+    : attente.mode === 'radio' ? `webradio ${attente.radioUrl || '(adresse manquante)'}`
+    : `playlist Navidrome ${attente.playlistName || attente.playlistId || '(non choisie)'}`}`);
+  if (attente.mode !== 'off' && !attenteConfiguree()) {
+    console.log('  ⚠ Incomplète : à régler depuis le panneau admin.');
+  }
+  majAttente();
+
+  if (CONFIG.soulseek.enabled) {
+    resetDownloadDir();
+    chargerCache();
+    console.log(cacheActif
+      ? `- Cache Soulseek: ${Object.keys(cacheIndex).length} morceau(x), ${enMo(tailleCache())} / ${enMo(CONFIG.soulseek.cacheMaxBytes)} (${CACHE_DIR})`
+      : '- Cache Soulseek: désactivé');
+    CONFIG.soulseek.version = await detectSockseek();
+
+    if (CONFIG.soulseek.version) {
+      console.log(`- Soulseek (repli): ${CONFIG.soulseek.version}`);
+      console.log(`  Téléchargements: ${SOULSEEK_DIR}`);
+      console.log(`  Suppression après lecture: ${CONFIG.soulseek.deleteAfterPlay ? 'oui' : 'non'}`);
+
+      const demon = await startSockseekDaemon();
+      const explications = {
+        'lancé': `démarré par le jukebox sur ${CONFIG.soulseek.remote}`,
+        'déjà lancé': `déjà en écoute sur ${CONFIG.soulseek.remote}`,
+        'distant': `sur une autre machine (${CONFIG.soulseek.remote})`,
+        'désactivé': `non démarré (SOCKSEEK_AUTOSTART=false) — attendu sur ${CONFIG.soulseek.remote}`,
+        'autonome': null,
+        'adresse invalide': `SOCKSEEK_REMOTE illisible : ${CONFIG.soulseek.remote}`
+      };
+
+      if (!CONFIG.soulseek.remote) {
+        console.log('  Mode autonome (plus lent : reconnexion à chaque recherche)');
+      } else if (demon && explications[demon]) {
+        console.log(`  Démon: ${explications[demon]}`);
+      } else {
+        console.log(`  ⚠ Démon injoignable sur ${CONFIG.soulseek.remote}.`);
+        console.log('  ⚠ Vérifiez les identifiants Soulseek dans ~/.config/sockseek/sockseek.conf.');
+        console.log('  ⚠ Les recherches fonctionneront en mode autonome, plus lent.');
+      }
+    } else {
+      console.log('- Soulseek (repli): DÉSACTIVÉ, sockseek introuvable');
+      console.log(`  ⚠ Commande testée: ${CONFIG.soulseek.sockseekPath} --version`);
+      console.log('  ⚠ Indiquez son chemin via SOCKSEEK_PATH dans le .env.');
+      console.log('  ⚠ Sans sockseek, seule la bibliothèque Navidrome est disponible.');
+    }
+  } else {
+    console.log('- Soulseek (repli): désactivé dans .env');
+  }
+
+  console.log('- Accès invité: liste d\'utilisateurs gérée depuis /admin');
+});
+
+// Ne rien laisser traîner en quittant
+function cleanupOnExit() {
+  if (CONFIG.soulseek.enabled) {
+    console.log('\nNettoyage des téléchargements Soulseek...');
+    try { fs.rmSync(SOULSEEK_DIR, { recursive: true, force: true }); } catch (e) { /* rien à faire */ }
+  }
+  // Le démon lancé par le jukebox s'arrête avec lui ; celui qu'on a trouvé
+  // déjà en route ne nous appartient pas, on n'y touche pas.
+  stopSockseekDaemon();
+  process.exit(0);
+}
+
+process.on('SIGINT', cleanupOnExit);
+process.on('SIGTERM', cleanupOnExit);
+process.on('exit', stopSockseekDaemon);
+
+module.exports = app;

@@ -1,0 +1,41 @@
+{
+  "dua lipa|physical": {
+    "title": "physical",
+    "artist": "dua lipa",
+    "album": "mp3 64",
+    "duration": 243,
+    "fichier": "cache-cb1f7de59aa2.mp3",
+    "pochette": null,
+    "taille": 9739925,
+    "ajouteLe": 1792516686638,
+    "dernierUsage": 1792517502408,
+    "slskLink": "slsk://scapitol/@@zwdjf/Musica/Pop/Dua Lipa - Physical.mp3",
+    "username": "scapitol"
+  },
+  "mark ronson feat bruno mars|uptown funk": {
+    "title": "Uptown Funk",
+    "artist": "Mark Ronson feat. Bruno Mars",
+    "album": "Uptown Special",
+    "duration": 270,
+    "fichier": "cache-734c48041f7c.mp3",
+    "pochette": "cache-734c48041f7c-pochette.jpg",
+    "taille": 10936169,
+    "ajouteLe": 1792516703268,
+    "dernierUsage": 1792517494160,
+    "slskLink": "slsk://yoblin/@@ulzbb/despot/Mark Ronson/Uptown Special [2015]/1-04 - Uptown Funk.mp3",
+    "username": "yoblin"
+  },
+  "miley cyrus|flowers": {
+    "title": "Flowers",
+    "artist": "Miley Cyrus",
+    "album": "Best of 20's",
+    "duration": 200,
+    "fichier": "cache-e57a1fc4af7b.mp3",
+    "pochette": "cache-e57a1fc4af7b-pochette.jpg",
+    "taille": 8305952,
+    "ajouteLe": 1792517494152,
+    "dernierUsage": 1792517494152,
+    "slskLink": "slsk://soulseeked88/music/Compilations/Various Artists/Best of 20's/Flowers - Miley Cyrus.mp3",
+    "username": "soulseeked88"
+  }
+}
