@@ -60,6 +60,9 @@ docker run -d --name jukebox --restart unless-stopped \
   -e NAVIDROME_PASS=password \
   -e SOULSEEK_USER=pseudo-soulseek \
   -e SOULSEEK_PASS=motdepasse-soulseek \
+  -e YOUTUBE_ENABLED=true \
+  -e YOUTUBE_ENABLED=true \
+  -e MAX_SONG_MINUTES=8 \
   -v jukebox-data:/app/data \
   tontonjo/jukebox:latest
 ```
