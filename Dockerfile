@@ -1,6 +1,9 @@
 # ============= JUKEBOX - DOCKER IMAGE =============
-# Version 2.0.0 - last updated: 22 October 2026
+# Version 2.1.0 - last updated: 29 October 2026
 # Changelog:
+#   2.1.0 - yt-dlp built in for the optional YouTube Music source
+#           (YOUTUBE_ENABLED=true). Base image moved to Node.js 22: yt-dlp
+#           needs Node.js 20+ as JavaScript runtime for YouTube.
 #   2.0.0 - sockseek (Soulseek fallback) is now built into the image.
 #           Base image moved from Alpine to Debian slim: sockseek is a glibc
 #           binary and needs libicu. Soulseek credentials come from
@@ -11,10 +14,13 @@
 # Multi-arch: docker buildx build --platform linux/amd64,linux/arm/v7 -t tontonjo/jukebox:latest --push .
 # Run:   docker run -d -p 3000:3000 --env-file .env tontonjo/jukebox:latest
 
-FROM node:18-bookworm-slim
+FROM node:22-bookworm-slim
 
 # sockseek release to bundle (https://github.com/fiso64/sockseek/releases)
 ARG SOCKSEEK_VERSION=3.0.6
+# yt-dlp release to bundle (https://github.com/yt-dlp/yt-dlp/releases).
+# YouTube changes often: rebuild the image to get a recent yt-dlp.
+ARG YTDLP_VERSION=latest
 # Set by buildx; defaults to amd64 for a plain "docker build"
 ARG TARGETARCH=amd64
 
@@ -37,6 +43,23 @@ RUN case "$TARGETARCH" in \
         && sockseek --version; \
     else \
         echo "sockseek: no build for $TARGETARCH, Soulseek fallback not included"; \
+    fi
+
+# yt-dlp standalone build (Python and its YouTube helpers included).
+# Used only when YOUTUBE_ENABLED=true.
+RUN case "$TARGETARCH" in \
+        amd64) YT_FILE=yt-dlp_linux ;; \
+        arm64) YT_FILE=yt-dlp_linux_aarch64 ;; \
+        arm)   YT_FILE=yt-dlp_linux_armv7l ;; \
+        *)     YT_FILE="" ;; \
+    esac \
+    && if [ -n "$YT_FILE" ]; then \
+        if [ "$YTDLP_VERSION" = "latest" ]; then YT_PATH=latest/download; else YT_PATH="download/$YTDLP_VERSION"; fi \
+        && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/$YT_PATH/$YT_FILE" -o /usr/local/bin/yt-dlp \
+        && chmod +x /usr/local/bin/yt-dlp \
+        && yt-dlp --version; \
+    else \
+        echo "yt-dlp: no build for $TARGETARCH, YouTube Music source not included"; \
     fi
 
 WORKDIR /app
@@ -62,6 +85,7 @@ ENV NODE_ENV=production \
     SOCKSEEK_PATH=sockseek \
     SOCKSEEK_REMOTE=http://127.0.0.1:5030 \
     SOCKSEEK_AUTOSTART=true \
+    YTDLP_PATH=yt-dlp \
     FALLBACK_STORE=/app/data/fallback.json \
     SOULSEEK_CACHE_DIR=/app/data/cache
 

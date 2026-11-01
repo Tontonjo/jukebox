@@ -1,7 +1,27 @@
 <!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════════════════
      Jukebox — page Admin
-     Version 1.2.1 — 18.09.2026
+     Version 1.6.2 — 01.11.2026
+       1.6.2  Playlist : « en cache » pour une piste jouée encore dans le
+              cache (au lieu de « supprimé après lecture »).
+     Version 1.6.1 — 01.11.2026
+       1.6.1  Listes (utilisateurs, playlist) : les lignes ne rétrécissent
+              plus sous leur contenu quand la liste déborde (textes qui se
+              chevauchaient). Utilisateurs : boutons sous le nom quand la
+              colonne est étroite.
+     Version 1.6.0 — 01.11.2026
+       1.6.0  Réglage « Durée max d'une chanson (invités) » en minutes,
+              0 = sans limite (MAX_SONG_MINUTES).
+     Version 1.5.0 — 01.11.2026
+       1.5.0  Recommandations : délai de base = durée d'une piste (D)
+              au lieu d'un tour de table (N × D). L'ordre par tours et le
+              quota en attente protègent déjà l'équité.
+       1.4.0  Quotas : « Chansons en attente max » (une place se libère
+              quand la chanson passe) et « File courte » remplacent la
+              fenêtre du quota. Recommandations et quotas dynamiques
+              adaptés (quota et délai seulement).
+       1.3.0  Source YouTube Music : provenance des résultats, état du
+              téléchargement dans la playlist, ligne dans l'état du serveur.
        1.2.1  La webradio accepte les flux .m3u8 (HLS), reconnus tout
               seuls a l'enregistrement de l'adresse.
        1.2.0  Panneau « Musique d'attente » : webradio ou playlist
@@ -209,6 +229,7 @@
     }
 
     .playlist-item {
+      flex-shrink: 0;   /* liste qui déborde : on défile, on n'écrase pas les lignes */
       background: rgba(255, 255, 255, 0.04);
       border: 1px solid var(--border);
       padding: 12px;
@@ -519,6 +540,20 @@
 
     .users-section .item-actions button {
       padding: 5px 11px;
+    }
+
+    /* Colonne étroite : les boutons passent sous le nom plutôt que de
+       l'écraser */
+    .users-section .playlist-item {
+      flex-wrap: wrap;
+    }
+
+    .users-section .item-info {
+      min-width: 150px;
+    }
+
+    .users-section .item-meta {
+      white-space: nowrap;
     }
 
     .item-actions button:disabled {
@@ -1207,7 +1242,7 @@
           <button type="button" class="reco-mode" data-cible="90">Longue<span>~1 h 30</span></button>
         </div>
 
-        <label for="setMaxSongs">Chansons max par utilisateur
+        <label for="setMaxSongs">Chansons en attente max par invité
           <button type="button" class="reco-chip" data-champ="setMaxSongs" title="Appliquer la valeur recommandée">–</button>
         </label>
         <input type="number" id="setMaxSongs" min="0" max="100" step="1">
@@ -1217,10 +1252,11 @@
         </label>
         <input type="number" id="setCooldown" min="0" max="1440" step="0.5">
 
-        <label for="setWindow">Fenêtre du quota (minutes, 0 = définitif)
-          <button type="button" class="reco-chip" data-champ="setWindow" title="Appliquer la valeur recommandée">–</button>
-        </label>
-        <input type="number" id="setWindow" min="0" max="10080" step="5">
+        <label for="setShortQueue">File courte : ajout libre sous N chansons à venir (0 = désactivé)</label>
+        <input type="number" id="setShortQueue" min="0" max="50" step="1">
+
+        <label for="setMaxDuration">Durée max d'une chanson, invités (minutes, 0 = sans limite)</label>
+        <input type="number" id="setMaxDuration" min="0" max="120" step="0.5">
 
         <div class="reco-constats" id="recoConstats"></div>
 
@@ -1670,7 +1706,7 @@
         const title = user.canAdd.limit === 'quota' ? 'Place libre dans' : 'Prochain ajout dans';
         return `<span class="${cls}" title="${title}" data-deadline="${deadline}">${formatClock(user.waitSeconds)}</span>`;
       }
-      return '<span class="quota-full">quota atteint</span>';
+      return '<span class="quota-full" title="Une place se libère quand une de ses chansons passe">quota atteint</span>';
     }
 
     function tickCooldowns() {
@@ -1694,7 +1730,8 @@
         const data = await response.json();
         document.getElementById('setMaxSongs').value = data.maxSongsPerUser;
         document.getElementById('setCooldown').value = data.cooldownMinutes;
-        document.getElementById('setWindow').value = data.quotaWindowMinutes;
+        document.getElementById('setShortQueue').value = data.shortQueueSongs;
+        document.getElementById('setMaxDuration').value = data.maxSongMinutes;
         document.getElementById('setFade').value = data.fadeSeconds;
         document.getElementById('setSoulseekSearch').value = data.soulseekSearchSeconds;
         afficherRecommandations();   // les pastilles se comparent aux valeurs fraîches
@@ -1707,7 +1744,8 @@
       const msgEl = document.getElementById('settingsMsg');
       const maxSongsPerUser = Number(document.getElementById('setMaxSongs').value);
       const cooldownMinutes = Number(document.getElementById('setCooldown').value);
-      const quotaWindowMinutes = Number(document.getElementById('setWindow').value);
+      const shortQueueSongs = Number(document.getElementById('setShortQueue').value);
+      const maxSongMinutes = Number(document.getElementById('setMaxDuration').value);
       const fadeSeconds = Number(document.getElementById('setFade').value);
       const soulseekSearchSeconds = Number(document.getElementById('setSoulseekSearch').value);
 
@@ -1715,7 +1753,7 @@
         const response = await adminFetch(`${API_BASE}/admin/settings`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ maxSongsPerUser, cooldownMinutes, quotaWindowMinutes, fadeSeconds, soulseekSearchSeconds })
+          body: JSON.stringify({ maxSongsPerUser, cooldownMinutes, shortQueueSongs, maxSongMinutes, fadeSeconds, soulseekSearchSeconds })
         });
 
         const data = await response.json();
@@ -1730,9 +1768,14 @@
         msgEl.style.color = '#34d399';
         const fondu = data.fadeSeconds > 0 ? `, fondu ${data.fadeSeconds} s` : ', sans fondu';
         const recherche = `, recherche Soulseek ${data.soulseekSearchSeconds} s`;
-        msgEl.textContent = (data.quotaWindowMinutes > 0
-          ? `✓ ${data.maxSongsPerUser} chansons / ${data.quotaWindowMinutes} min, délai ${data.cooldownMinutes} min`
-          : `✓ ${data.maxSongsPerUser} chansons (quota définitif), délai ${data.cooldownMinutes} min`) + fondu + recherche;
+        const fileCourte = data.shortQueueSongs > 0
+          ? `, ajout libre sous ${data.shortQueueSongs} à venir`
+          : ', file courte désactivée';
+        const dureeMax = data.maxSongMinutes > 0
+          ? `, chansons de ${data.maxSongMinutes} min max`
+          : ', durée sans limite';
+        msgEl.textContent = `✓ ${data.maxSongsPerUser} en attente max, délai ${data.cooldownMinutes} min`
+          + fileCourte + dureeMax + fondu + recherche;
         setTimeout(() => { msgEl.textContent = ''; }, 4000);
 
         loadUsers();
@@ -2339,6 +2382,7 @@
     }
 
     function sourceLabel(song) {
+      if (song.source === 'youtube') return '▶️ YouTube Music';
       if (song.source !== 'soulseek') return '🎵 Navidrome';
       return '🎧 Soulseek'
         + (song.format ? ' • ' + escapeHtml(song.format.toUpperCase()) : '')
@@ -2497,25 +2541,27 @@
         document.getElementById('serverStatus').innerHTML = `
           Max chansons/user: ${config.maxSongsPerUser}<br>
           Cooldown: ${config.cooldownMinutes}min<br>
-          Fenêtre quota: ${config.quotaWindowMinutes > 0 ? config.quotaWindowMinutes + 'min' : 'définitif'}<br>
+          File courte: ${config.shortQueueSongs > 0 ? 'moins de ' + config.shortQueueSongs + ' à venir' : 'désactivée'}<br>
 
           Utilisateurs autorisés: ${userCount}<br>
           Navidrome: ${config.sources.navidrome ? '✓' : '✗'}<br>
-          Soulseek: ${config.sources.soulseek ? '✓' : '✗ (sockseek introuvable)'}
+          Soulseek: ${config.sources.soulseek ? '✓' : '✗ (sockseek introuvable)'}<br>
+          YouTube Music: ${config.sources.youtube ? '✓' : '✗ (désactivé ou yt-dlp introuvable)'}
         `;
       } catch (error) {
         console.error('Status update error:', error);
       }
     }
 
-    // Etat du fichier temporaire pour les pistes Soulseek
+    // Etat du fichier temporaire pour les pistes Soulseek et YouTube Music
     function downloadLabel(track) {
-      if (track.source !== 'soulseek') return '';
+      if (track.source !== 'soulseek' && track.source !== 'youtube') return '';
       const labels = {
         pending: ' • <span class="cooldown">en attente</span>',
         downloading: ' • <span class="cooldown">téléchargement...</span>',
         ready: ' • <span class="ready">prêt</span>',
         deleted: ' • <span style="color:rgba(255,255,255,0.45)">supprimé après lecture</span>',
+        cached: ' • <span style="color:rgba(0,229,255,0.7)" title="Copie temporaire supprimée, le morceau reste dans le cache">en cache</span>',
         failed: ' • <span class="quota-full">échec</span>',
         absent: ''
       };
@@ -2547,7 +2593,7 @@
       if (e.key === 'Enter') adminSearch(true);
     });
 
-    ['setMaxSongs', 'setCooldown', 'setWindow', 'setFade', 'setSoulseekSearch'].forEach(id => {
+    ['setMaxSongs', 'setCooldown', 'setShortQueue', 'setMaxDuration', 'setFade', 'setSoulseekSearch'].forEach(id => {
       const el = document.getElementById(id);
       el.addEventListener('input', () => { settingsDirty = true; });
       el.addEventListener('keypress', (e) => { if (e.key === 'Enter') saveSettings(); });
@@ -2657,13 +2703,15 @@
        musique ne se joue. Une piste dure D minutes en moyenne, il y a N
        invités qui participent, et on vise une file de T minutes.
 
-         • quota   = T / (N × D)      pile ce qu'il faut pour remplir la
+         • quota   = T / (N × D)      chansons en attente par invité :
+                                      pile ce qu'il faut pour remplir la
                                       file cible si tout le monde ajoute
-         • fenêtre = T                la file se vide en T minutes, les
-                                      quotas se rechargent au même rythme
-         • délai   = min(N × D,       N × D = un tour de table complet ;
-                        fenêtre/quota) jamais plus que ce qui permet
-                                      d'utiliser réellement son quota
+         • délai   = min(D,           D = une piste : un invité ajoute au
+                        T / quota)    plus une chanson par chanson jouée ;
+                                      jamais plus que ce qui permet
+                                      d'utiliser réellement son quota.
+                                      Sans chanson en attente, pas de
+                                      délai (règle du serveur).
 
        D et N viennent des données réelles : durée moyenne des pistes
        déjà ajoutées, et invités ayant effectivement ajouté quelque chose.
@@ -2713,7 +2761,7 @@
       // Régime d'équilibre : personne n'ajoute plus vite que la musique
       // ne se joue. C'est le point de départ, pas le mot de la fin.
       const quotaBase = recoCible / (participants * dureeMoy);
-      const delaiEquilibre = participants * dureeMoy;
+      const delaiEquilibre = dureeMoy;   // une piste, l'ordre par tours fait le reste
 
       /* Correction selon l'état réel de la file. remplissage vaut 1 quand
          la file est pile à la cible, 0 quand elle est vide, 2 quand elle
@@ -2726,9 +2774,8 @@
 
       const quotaExact = quotaBase / ouvertureQuota;
       const quota = borner(Math.round(quotaExact), 1, 20);
-      const fenetre = borner(arrondiPas(recoCible, 5), 5, 10080);
       const delai = borner(
-        arrondiPas(Math.min(delaiEquilibre * ouvertureDelai, fenetre / quota), 0.5),
+        arrondiPas(Math.min(delaiEquilibre * ouvertureDelai, recoCible / quota), 0.5),
         0.5,
         60
       );
@@ -2743,7 +2790,7 @@
       const bloques = users.filter(u => u.canAdd && !u.canAdd.allowed && u.canAdd.limit === 'quota').length;
 
       return {
-        quota, quotaExact, fenetre, delai, dureeMoy, participants, inscrits, actifs,
+        quota, quotaExact, delai, dureeMoy, participants, inscrits, actifs,
         attente, remplissage, aVenir: aVenir.length, classement, bloques,
         totalAjouts: playlist.length,
         sansDonnees: durees.length === 0
@@ -2761,7 +2808,7 @@
         `${r.sansDonnees ? '~' : ''}${r.dureeMoy.toFixed(1).replace('.', ',')} min/piste`;
 
       // Chaque champ porte sa propre recommandation : un clic l'adopte
-      [['setMaxSongs', r.quota], ['setCooldown', r.delai], ['setWindow', r.fenetre]]
+      [['setMaxSongs', r.quota], ['setCooldown', r.delai]]
         .forEach(([id, valeur]) => {
           const pastille = document.querySelector(`.reco-chip[data-champ="${id}"]`);
           if (!pastille) return;
@@ -2819,7 +2866,6 @@
 
       document.getElementById('setMaxSongs').value = recoDerniere.quota;
       document.getElementById('setCooldown').value = recoDerniere.delai;
-      document.getElementById('setWindow').value = recoDerniere.fenetre;
       settingsDirty = true;   // le rafraîchissement ne doit pas écraser la proposition
 
       const msg = document.getElementById('settingsMsg');
@@ -2888,8 +2934,7 @@
     function lireQuotasChamps() {
       return {
         quota: Number(document.getElementById('setMaxSongs').value),
-        delai: Number(document.getElementById('setCooldown').value),
-        fenetre: Number(document.getElementById('setWindow').value)
+        delai: Number(document.getElementById('setCooldown').value)
       };
     }
 
@@ -2903,14 +2948,14 @@
     }
 
     function texteQuotas(v) {
-      return `${v.quota} chanson${v.quota > 1 ? 's' : ''} / ${v.delai} min / fenêtre ${v.fenetre} min`;
+      return `${v.quota} chanson${v.quota > 1 ? 's' : ''} en attente / ${v.delai} min`;
     }
 
     function majAffichageAuto() {
       const etat = document.getElementById('recoAutoEtat');
       const boite = document.getElementById('quotasBox');
       const bouton = document.getElementById('recoApply');
-      const champs = ['setMaxSongs', 'setCooldown', 'setWindow']
+      const champs = ['setMaxSongs', 'setCooldown']
         .map(id => document.getElementById(id));
 
       boite.classList.toggle('auto', autoQuotas);
@@ -2950,11 +2995,10 @@
       if (memorises) {
         const actuels = lireQuotasChamps();
         const identique = actuels.quota === memorises.quota
-          && actuels.delai === memorises.delai
-          && actuels.fenetre === memorises.fenetre;
+          && actuels.delai === memorises.delai;
         if (!identique) {
           try {
-            const ok = await envoyerQuotas(memorises.quota, memorises.delai, memorises.fenetre);
+            const ok = await envoyerQuotas(memorises.quota, memorises.delai);
             if (ok) {
               msg.style.color = '#34d399';
               msg.textContent = `↩ Quotas manuels rétablis : ${texteQuotas(memorises)}`;
@@ -2972,12 +3016,12 @@
       afficherRecommandations();
     }
 
-    // Envoie les trois limites au serveur en gardant fondu et recherche tels quels
-    async function envoyerQuotas(quota, delai, fenetre) {
+    // Envoie quota et délai au serveur en gardant file courte, fondu et recherche tels quels
+    async function envoyerQuotas(quota, delai) {
       const corps = {
         maxSongsPerUser: quota,
         cooldownMinutes: delai,
-        quotaWindowMinutes: fenetre,
+        shortQueueSongs: Number(document.getElementById('setShortQueue').value),
         fadeSeconds: Number(document.getElementById('setFade').value),
         soulseekSearchSeconds: Number(document.getElementById('setSoulseekSearch').value)
       };
@@ -3004,29 +3048,25 @@
       const r = calculerRecommandations();
       const actuelQuota = Number(document.getElementById('setMaxSongs').value);
       const actuelDelai = Number(document.getElementById('setCooldown').value);
-      const actuelFenetre = Number(document.getElementById('setWindow').value);
 
       // Zone morte : le quota exact est un nombre à virgule, on ne change
       // la valeur entière que lorsqu'il s'en éloigne franchement.
       const bougeQuota = Math.abs(r.quotaExact - actuelQuota) >= AUTO_ZONE_MORTE && r.quota !== actuelQuota;
       const bougeDelai = Math.abs(r.delai - actuelDelai) >= Math.max(1, actuelDelai * 0.15);
-      const bougeFenetre = r.fenetre !== actuelFenetre;
 
-      if (!bougeQuota && !bougeDelai && !bougeFenetre) return;
+      if (!bougeQuota && !bougeDelai) return;
 
       const quota = bougeQuota ? r.quota : actuelQuota;
       const delai = bougeDelai ? r.delai : actuelDelai;
-      const fenetre = bougeFenetre ? r.fenetre : actuelFenetre;
 
       autoEnCours = true;
       try {
-        const ok = await envoyerQuotas(quota, delai, fenetre);
+        const ok = await envoyerQuotas(quota, delai);
         if (ok) {
           autoDernierAjustement = maintenant;
           const heure = new Date().toLocaleTimeString('fr-CH', { hour: '2-digit', minute: '2-digit' });
           autoResume = `Actif · dernier ajustement à <b>${heure}</b> :<br>` +
-                       `<b>${quota}</b> chanson${quota > 1 ? 's' : ''} / <b>${delai} min</b> de délai / ` +
-                       `fenêtre <b>${fenetre} min</b><br>` +
+                       `<b>${quota}</b> chanson${quota > 1 ? 's' : ''} en attente / <b>${delai} min</b> de délai<br>` +
                        `<span style="opacity:.7">${r.participants} invité${r.participants > 1 ? 's' : ''} actif${r.participants > 1 ? 's' : ''} · ` +
                        `${r.dureeMoy.toFixed(1).replace('.', ',')} min/piste · file ${Math.round(r.attente)} min</span>`;
           loadSettings();

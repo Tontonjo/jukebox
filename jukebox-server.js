@@ -1,6 +1,70 @@
 // ============================================================
 //  Jukebox — serveur
-//  Version : 1.5.0 (2026-10-20)
+//  Version : 1.15.0 (2026-11-01)
+//    1.15.0 : Pochette de secours : une piste de la playlist sans pochette
+//            (Soulseek sans image integree, Navidrome sans pochette, cache
+//            sans pochette) en cherche une sur Deezer (API publique, sans
+//            cle) par artiste et titre. Une requete par morceau, l'image
+//            est gardee en local et suit le morceau dans le cache.
+//  Version : 1.14.1 (2026-11-01)
+//    1.14.1 : Piste jouee dont la copie temporaire est supprimee mais qui
+//            est dans le cache : downloadStatus 'cached' (l'admin affiche
+//            « en cache » au lieu de « supprime apres lecture »).
+//  Version : 1.14.0 (2026-11-01)
+//    1.14.0 : Priorite limitee aux premieres chansons de la soiree d'un
+//            invite (PRIORITY_FIRST_SONGS, defaut 1, 0 = aucune) : elles
+//            passent en tete de leur tour. Ensuite, ordre d'arrivee dans
+//            le tour (remplace le classement par chansons servies, 1.12.0).
+//  Version : 1.13.0 (2026-11-01)
+//    1.13.0 : Duree max des chansons ajoutees par les invites
+//            (MAX_SONG_MINUTES, defaut 8, 0 = sans limite, reglable dans
+//            l'admin). Resultats trop longs marques tooLong, ajout refuse.
+//            Duree inconnue : verifiee apres telechargement, piste retiree
+//            et credit rendu si elle depasse. L'admin n'est pas limite.
+//  Version : 1.12.0 (2026-11-01)
+//    1.12.0 : Ordre par tours : dans un meme tour, l'invite le moins servi
+//            de la soiree (chansons deja passees) passe en premier. Un
+//            nouvel invite passe donc vite. La prochaine piste a venir
+//            n'est jamais decalee (annoncee, peut-etre en telechargement).
+//  Version : 1.11.0 (2026-11-01)
+//    1.11.0 : Pas de delai d'ajout pour un invite qui n'a aucune chanson
+//            en attente : le cooldown ne separe que des chansons en attente.
+//  Version : 1.10.0 (2026-11-01)
+//    1.10.0 : Rattrapage du quota. Un invite peut depasser le max tant
+//            qu'un autre invite a plus de chansons en attente que lui
+//            (sa chanson ne rallonge pas la file des tours), plafond
+//            2 x max (QUOTA_CATCH_UP_FACTOR). L'admin n'est pas compte.
+//            maxSongs renvoye par invite = limite effective.
+//  Version : 1.9.0 (2026-10-31)
+//    1.9.0 : Quota et ordre de passage. Le quota compte les chansons en
+//            attente : une chanson libere sa place des qu'elle passe (fin
+//            de la fenetre glissante QUOTA_WINDOW_MINUTES). Ordre par tours :
+//            la n-ieme chanson en attente d'un invite passe apres la
+//            n-ieme des autres. File courte (moins de SHORT_QUEUE_SONGS
+//            chansons a venir) : quota et cooldown ignores.
+//  Version : 1.8.0 (2026-10-31)
+//    1.8.0 : Recherche : une source qui renvoie moins de 3 resultats
+//            (SEARCH_MIN_RESULTS) fait aussi interroger la suivante
+//            (Navidrome -> Soulseek -> YouTube Music). Les resultats
+//            s'additionnent, doublons retires.
+//  Version : 1.7.0 (2026-10-29)
+//    1.7.0 : Ecran de lecture, options du .env (desactivees par defaut) :
+//            PLAYER_ADDED_BY (« Ajoutee par » au demarrage d'une chanson),
+//            PLAYER_ADD_TOAST (annonce de chaque ajout), PLAYER_REACTIONS
+//            (emojis envoyes par les invites, POST /api/reaction) et
+//            PLAYER_STANDBY (message pendant la musique d'attente). Ajouts
+//            et reactions passent par un fil d'evenements (GET /api/feed).
+//  Version : 1.6.1 (2026-10-29)
+//    1.6.1 : Le cache n'empeche plus la recherche Soulseek (ni YouTube
+//            Music) : ses morceaux s'affichent en tete, a cote des
+//            nouveaux resultats, au lieu d'etre les seuls proposes.
+//    1.6.0 : Source YouTube Music (optionnelle, YOUTUBE_ENABLED=true).
+//            Troisieme dans l'ordre : interrogee seulement si Navidrome
+//            puis Soulseek ne trouvent rien. Recherche par l'API du site
+//            YouTube Music (repli : recherche YouTube via yt-dlp),
+//            telechargement par yt-dlp (l'outil du repli --yt-dlp de
+//            sockseek). Meme circuit que Soulseek : dossier temporaire,
+//            cache, suppression apres lecture.
 //    1.5.0 : Cache Soulseek. Un morceau joue est copie dans un cache
 //            (SOULSEEK_CACHE_DIR, ./cache par defaut) limite a
 //            SOULSEEK_CACHE_MAX_MB (1024 par defaut, 0 = desactive).
@@ -56,6 +120,7 @@ console.log('NAVIDROME_URL     =', process.env.NAVIDROME_URL);
 console.log('NAVIDROME_USER    =', process.env.NAVIDROME_USER);
 console.log('NAVIDROME_PASS    =', process.env.NAVIDROME_PASS ? '***présent***' : 'ABSENT');
 console.log('SOULSEEK_ENABLED  =', process.env.SOULSEEK_ENABLED !== 'false');
+console.log('YOUTUBE_ENABLED   =', process.env.YOUTUBE_ENABLED === 'true');
 console.log('=================');
 
 const app = express();
@@ -114,6 +179,39 @@ const CONFIG = {
     version: null
   },
 
+  // YouTube Music : dernier repli, interrogé seulement si Navidrome puis
+  // Soulseek ne trouvent rien. Optionnel : YOUTUBE_ENABLED=true.
+  // Téléchargement par yt-dlp, l'outil qu'utilise aussi sockseek pour son
+  // repli --yt-dlp. Les fichiers suivent le même circuit que Soulseek
+  // (dossier temporaire, cache, suppression après lecture).
+  youtube: {
+    enabled: process.env.YOUTUBE_ENABLED === 'true',
+    ytdlpPath: process.env.YTDLP_PATH || 'yt-dlp',
+    // Moteur JavaScript dont yt-dlp a besoin face aux protections de
+    // YouTube. Par défaut le Node.js qui fait tourner le jukebox (20 ou
+    // plus requis par yt-dlp). Vide = réglage de yt-dlp seul (deno).
+    jsRuntime: process.env.YTDLP_JS_RUNTIME !== undefined
+      ? process.env.YTDLP_JS_RUNTIME.trim()
+      : `node:${process.execPath}`,
+    // Audio d'origine, sans conversion (pas besoin de ffmpeg). Le m4a
+    // passe dans tous les navigateurs, Safari compris.
+    format: process.env.YOUTUBE_FORMAT || 'bestaudio[ext=m4a]/bestaudio',
+    maxResults: parseInt(process.env.YOUTUBE_MAX_RESULTS || '10', 10),
+    searchTimeoutMs: parseInt(process.env.YOUTUBE_SEARCH_TIMEOUT || '15', 10) * 1000,
+    downloadTimeoutMs: parseInt(process.env.YOUTUBE_DOWNLOAD_TIMEOUT || '120', 10) * 1000,
+    // Renseigné au démarrage
+    version: null
+  },
+
+  // Ecran de lecture : effets optionnels, tous desactives par defaut
+  display: {
+    addedBy: process.env.PLAYER_ADDED_BY === 'true',      // « Ajoutée par Julie »
+    addToast: process.env.PLAYER_ADD_TOAST === 'true',    // « Marc vient d'ajouter... »
+    reactions: process.env.PLAYER_REACTIONS === 'true',   // emojis des invités
+    standby: process.env.PLAYER_STANDBY === 'true',       // message pendant l'attente
+    standbyText: process.env.PLAYER_STANDBY_TEXT || '📱 Scannez le QR code et ajoutez votre chanson !'
+  },
+
   // Musique d'attente : ce qui joue quand plus aucune chanson d'invité
   // n'attend son tour. Réglée depuis le panneau admin ; ces valeurs ne
   // sont que le point de départ au premier démarrage.
@@ -140,9 +238,14 @@ const CONFIG = {
   fadeSeconds: Math.min(15, Math.max(0, parseFloat(process.env.FADE_SECONDS || '3') || 0)),
   maxSongsPerUser: parseInt(process.env.MAX_SONGS_PER_USER || '3'),
   cooldownMinutes: parseInt(process.env.COOLDOWN_MINUTES || '5'),
-  // Fenêtre glissante du quota : une chanson libère sa place après ce délai.
-  // 0 = quota définitif (seul l'admin peut réinitialiser).
-  quotaWindowMinutes: parseFloat(process.env.QUOTA_WINDOW_MINUTES || '60'),
+  // File courte : sous ce nombre de chansons à venir, quota et cooldown
+  // sont ignorés pour que la musique ne s'arrête pas. 0 = désactivé.
+  shortQueueSongs: Math.max(0, parseInt(process.env.SHORT_QUEUE_SONGS || '2', 10) || 0),
+  // Les N premières chansons de la soirée d'un invité passent en tête de
+  // leur tour (un nouveau venu passe vite). 0 = pas de priorité.
+  priorityFirstSongs: Math.max(0, parseInt(process.env.PRIORITY_FIRST_SONGS || '1', 10) || 0),
+  // Durée max d'une chanson ajoutée par un invité, en minutes. 0 = sans limite.
+  maxSongMinutes: Math.max(0, parseFloat(process.env.MAX_SONG_MINUTES || '8') || 0),
   sessionDuration: parseInt(process.env.SESSION_DURATION || '120') // minutes
 };
 
@@ -151,7 +254,7 @@ const state = {
   playlist: [],
   currentTrackIndex: 0,
   isPlaying: false,
-  users: new Map(), // userId -> { id, name, addedSongs: [], lastAddTime, createdAt }
+  users: new Map(), // userId -> { id, name, totalAdded, lastAddTime, resetAt, createdAt }
   adminTokens: new Set(),
   playbackTime: 0,
   // Incremente a chaque saut demande par l'admin : l'ecran de lecture
@@ -273,8 +376,8 @@ function createUser(name, password) {
     id: generateUserId(),
     name: clean,
     password: code.password,   // c'est lui qui identifie l'invité
-    addedSongs: [],      // [{ id, at }] limité à la fenêtre glissante
     totalAdded: 0,       // compteur cumulé, informatif
+    resetAt: 0,          // réinitialisation admin : les chansons plus anciennes ne comptent plus
     notices: [],         // messages à afficher à l'invité (ex : téléchargement échoué)
     lastAddTime: 0,
     createdAt: Date.now()
@@ -289,9 +392,9 @@ function adminUserView(user) {
     id: user.id,
     name: user.name,
     password: user.password,   // l'organisateur doit pouvoir le redonner
-    addedSongs: user.addedSongs.length,
+    addedSongs: pendingSongs(user).length,
     totalAdded: user.totalAdded,
-    maxSongs: CONFIG.maxSongsPerUser,
+    maxSongs: userSongLimit(user),
     lastAddTime: user.lastAddTime,
     createdAt: user.createdAt,
     canAdd,
@@ -326,65 +429,107 @@ function activeNotices(user) {
 }
 
 // Rend à l'invité la place occupée par une chanson qui n'a jamais pu être
-// jouée : quota, compteur cumulé et cooldown (ce dernier suivait cet ajout,
-// il n'a plus lieu d'être).
+// jouée : compteur cumulé et cooldown (ce dernier suivait cet ajout, il n'a
+// plus lieu d'être). Le quota se libère seul : la piste a quitté la file.
+// À appeler après l'avoir retirée de la playlist.
 function refundUserCredit(track, message) {
   const user = findUserById(track.addedById);
   if (!user) return null;
 
-  const index = user.addedSongs.findIndex(entry => entry.id === track.id);
-  if (index !== -1) user.addedSongs.splice(index, 1);
   user.totalAdded = Math.max(0, (user.totalAdded || 0) - 1);
 
-  user.lastAddTime = user.addedSongs.length
-    ? Math.max(...user.addedSongs.map(entry => entry.at))
+  const restantes = pendingSongs(user);
+  user.lastAddTime = restantes.length
+    ? Math.max(...restantes.map(entry => entry.addedAt || 0))
     : 0;
 
   if (message) addUserNotice(user, track.id, message);
   return user;
 }
 
-// Chansons encore comptées dans le quota. Au-delà de la fenêtre glissante,
-// une chanson libère sa place. Purge au passage pour ne rien accumuler.
-function activeSongs(user) {
-  if (CONFIG.quotaWindowMinutes <= 0) return user.addedSongs;
+// Pistes encore à venir : pas encore jouées, après le morceau courant.
+// Celui-ci compte tant qu'il n'a pas démarré (première piste en attente
+// du bouton lecture). Les pistes sautées avant le morceau courant ne
+// repasseront pas d'elles-mêmes, elles sont ignorées.
+function upcomingIndexes() {
+  const indexes = [];
+  const current = state.playlist[state.currentTrackIndex];
+  const currentStarted = !current || current.played || state.isPlaying || state.playbackTime > 0;
+  const from = state.currentTrackIndex + (currentStarted ? 1 : 0);
+  for (let i = from; i < state.playlist.length; i++) {
+    if (!state.playlist[i].played) indexes.push(i);
+  }
+  return indexes;
+}
 
-  const cutoff = Date.now() - CONFIG.quotaWindowMinutes * 60 * 1000;
-  const active = user.addedSongs.filter(entry => entry.at > cutoff);
-  user.addedSongs = active;
-  return active;
+// Chansons de l'invité encore en attente : ce sont elles qui comptent dans
+// le quota. Une chanson libère sa place dès qu'elle passe. Une
+// réinitialisation par l'admin efface celles ajoutées avant.
+function pendingSongs(user) {
+  const depuis = user.resetAt || 0;
+  return upcomingIndexes()
+    .map(i => state.playlist[i])
+    .filter(track => track.addedById === user.id && (track.addedAt || 0) > depuis);
+}
+
+// Rattrapage : un invité peut aller au-delà du max jusqu'au nombre de
+// chansons à venir de l'invité qui en a le plus (l'admin n'est pas
+// compté), sans dépasser QUOTA_CATCH_UP_FACTOR x max. Sa chanson tombe
+// alors dans un tour qui existe déjà : la file ne s'allonge pas.
+const QUOTA_CATCH_UP_FACTOR = 2;
+
+function userSongLimit(user) {
+  const base = CONFIG.maxSongsPerUser;
+  if (base <= 0) return 0;   // ajouts fermés par l'organisateur
+
+  const compte = new Map();
+  for (const i of upcomingIndexes()) {
+    const owner = state.playlist[i].addedById;
+    if (owner && owner !== user.id && state.users.has(owner)) {
+      compte.set(owner, (compte.get(owner) || 0) + 1);
+    }
+  }
+  const plusLongue = Math.max(0, ...compte.values());
+  return Math.min(base * QUOTA_CATCH_UP_FACTOR, Math.max(base, plusLongue));
+}
+
+// Durée max (invités) : seule une durée connue peut dépasser
+function tooLong(duration) {
+  return CONFIG.maxSongMinutes > 0 && Number(duration) > CONFIG.maxSongMinutes * 60;
+}
+
+function tooLongReason(title, duration) {
+  return `« ${title} » dure ${formatDuration(Math.round(duration))}, `
+    + `la limite est de ${formatDuration(Math.round(CONFIG.maxSongMinutes * 60))}`;
+}
+
+// File courte : moins de CONFIG.shortQueueSongs chansons à venir
+function shortQueue() {
+  return CONFIG.shortQueueSongs > 0 && upcomingIndexes().length < CONFIG.shortQueueSongs;
 }
 
 function canUserAddSong(user) {
   if (!user) return { allowed: false, reason: 'Utilisateur non autorisé', limit: 'unknown' };
-  const now = Date.now();
-  const active = activeSongs(user);
 
-  // Quota : nombre de chansons dans la fenêtre glissante
-  if (active.length >= CONFIG.maxSongsPerUser) {
-    if (CONFIG.quotaWindowMinutes > 0 && active.length > 0) {
-      const oldest = Math.min(...active.map(entry => entry.at));
-      const freeAt = oldest + CONFIG.quotaWindowMinutes * 60 * 1000;
-      const waitSeconds = Math.max(1, Math.ceil((freeAt - now) / 1000));
-      return {
-        allowed: false,
-        limit: 'quota',
-        waitSeconds,
-        reason: `Quota atteint : une place se libère dans ${formatDuration(waitSeconds)}`
-      };
-    }
+  // File presque vide : on laisse ajouter, la musique ne doit pas s'arrêter
+  if (shortQueue()) return { allowed: true, shortQueue: true };
 
-    // Fenêtre désactivée (ou quota à 0) : seul l'organisateur peut débloquer
+  // Quota : nombre de chansons en attente
+  if (pendingSongs(user).length >= userSongLimit(user)) {
     return {
       allowed: false,
       limit: 'quota',
-      reason: 'Nombre maximum de chansons atteint'
+      reason: CONFIG.maxSongsPerUser > 0
+        ? 'Quota atteint : une place se libère dès que l\'une de vos chansons passe'
+        : 'Ajouts fermés par l\'organisateur'
     };
   }
 
-  // Cooldown : délai minimum entre deux ajouts
+  // Cooldown : délai minimum entre deux chansons en attente. Un invité
+  // qui n'a plus rien dans la file peut ajouter tout de suite.
+  if (pendingSongs(user).length === 0) return { allowed: true };
   const cooldownMs = CONFIG.cooldownMinutes * 60 * 1000;
-  const elapsed = now - user.lastAddTime;
+  const elapsed = Date.now() - user.lastAddTime;
   if (user.lastAddTime > 0 && elapsed < cooldownMs) {
     const waitSeconds = Math.ceil((cooldownMs - elapsed) / 1000);
     return {
@@ -396,6 +541,43 @@ function canUserAddSong(user) {
   }
 
   return { allowed: true };
+}
+
+// Priorité : la chanson fait partie des CONFIG.priorityFirstSongs premières
+// de la soirée de l'invité (toutes ses pistes encore dans la playlist,
+// jouées ou à venir ; une chanson retirée ne compte pas).
+function isPrioritySong(user) {
+  if (CONFIG.priorityFirstSongs <= 0) return false;
+  const dejaAjoutees = state.playlist.filter(t => t.addedById === user.id).length;
+  return dejaAjoutees < CONFIG.priorityFirstSongs;
+}
+
+// Ordre par tours. Parmi les pistes à venir, la n-ième de chaque
+// participant (chaque invité, et l'admin compté comme un participant)
+// forme le tour n. Une nouvelle chanson au tour n se place avant la
+// première piste à venir d'un tour supérieur, sinon à la fin. Une chanson
+// prioritaire (voir isPrioritySong) passe aussi devant les pistes non
+// prioritaires de son tour ; entre prioritaires, l'ordre d'arrivée.
+// La prochaine piste à venir n'est jamais décalée : elle est annoncée et
+// peut être en téléchargement. L'ordre en place (y compris un
+// déplacement manuel) n'est jamais modifié.
+function fairInsertIndex(userId, prioritaire) {
+  const upcoming = upcomingIndexes();
+  if (!upcoming.length) return state.playlist.length;
+
+  const compte = new Map();
+  const tours = upcoming.map((i) => {
+    const owner = state.playlist[i].addedById || 'admin';
+    const tour = (compte.get(owner) || 0) + 1;
+    compte.set(owner, tour);
+    return { tour, priority: Boolean(state.playlist[i].priority) };
+  });
+  const tourNouveau = (compte.get(userId) || 0) + 1;
+
+  // Recherche à partir de la 2e piste à venir : la prochaine ne bouge pas
+  const k = tours.findIndex(({ tour, priority }, j) => j > 0
+    && (tour > tourNouveau || (prioritaire && tour === tourNouveau && !priority)));
+  return k === -1 ? state.playlist.length : upcoming[k];
 }
 
 // ============= AUTH =============
@@ -514,11 +696,12 @@ const SOULSEEK_DIR = path.resolve(CONFIG.soulseek.downloadDir);
 // de recherche configuré, avant de le tuer. Interne : n'affecte pas la
 // barre de progression annoncée au client.
 const SOULSEEK_PROCESS_OVERHEAD_MS = 20000;
-const AUDIO_EXTENSIONS = ['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.wma'];
+const AUDIO_EXTENSIONS = ['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.wma', '.webm', '.weba'];
 
-// id -> { link, title, artist, ... } : résultats récents, pour retrouver le
-// lien slsk:// à partir de l'identifiant court manipulé par les clients
-const soulseekResults = new Map();
+// id -> { link, title, artist, ... } : résultats récents (Soulseek, YouTube
+// Music, cache), pour retrouver le lien slsk:// ou l'identifiant YouTube à
+// partir de l'identifiant court manipulé par les clients
+const remoteResults = new Map();
 // id -> { status, file, error, startedAt }
 const downloads = new Map();
 
@@ -530,6 +713,21 @@ let loggedRawOutput = false;
 
 function soulseekAvailable() {
   return CONFIG.soulseek.enabled && !!CONFIG.soulseek.version;
+}
+
+// Sources dont les morceaux sont téléchargés avant d'être joués
+function isDownloadSource(source) {
+  return source === 'soulseek' || source === 'youtube';
+}
+
+function sourceName(track) {
+  return track && track.source === 'youtube' ? 'YouTube Music' : 'Soulseek';
+}
+
+// La piste peut-elle être téléchargée maintenant ?
+function downloadPossible(track) {
+  if (track.source === 'youtube') return youtubeAvailable() && !!track.youtubeId;
+  return soulseekAvailable() && !!track.slskLink;
 }
 
 function remoteArgs() {
@@ -897,7 +1095,7 @@ async function searchSoulseek(query, signal) {
     results.sort((a, b) => (a.freeSlot === b.freeSlot) ? 0 : (a.freeSlot ? -1 : 1));
 
     const selected = results.slice(0, CONFIG.soulseek.maxResults);
-    for (const track of selected) soulseekResults.set(track.id, track);
+    for (const track of selected) remoteResults.set(track.id, track);
 
     return selected;
   } catch (error) {
@@ -937,6 +1135,245 @@ function explainSockseekError(message) {
   }
 
   return text;
+}
+
+// ============= YOUTUBE MUSIC (dernier repli) =============
+// Recherche : API interne du site YouTube Music, une seule requête qui
+// donne titre, artiste, album, durée et pochette. Si elle échoue (format
+// changé, refus), recherche YouTube classique via yt-dlp, moins précise
+// (l'artiste est la chaîne). Téléchargement : yt-dlp, par identifiant.
+
+const YTM_SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search?prettyPrint=false';
+// Client « web » de YouTube Music ; une version ancienne reste acceptée
+const YTM_CLIENT = { clientName: 'WEB_REMIX', clientVersion: '1.20250101.01.00', hl: 'en', gl: 'US' };
+// Filtre « Songs » du site : ni vidéos, ni albums, ni artistes
+const YTM_SONGS_FILTER = 'EgWKAQIIAWoMEA4QChADEAQQCRAF';
+const YTM_HEADERS = {
+  'Content-Type': 'application/json',
+  'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36',
+  Origin: 'https://music.youtube.com',
+  Referer: 'https://music.youtube.com/'
+};
+const YOUTUBE_ID = /^[A-Za-z0-9_-]{11}$/;
+
+function youtubeAvailable() {
+  return CONFIG.youtube.enabled && !!CONFIG.youtube.version;
+}
+
+// yt-dlp écrit ses avertissements sur stderr : on garde la ligne ERROR
+function ytDlpError(stderr) {
+  const lines = String(stderr || '').trim().split('\n').filter(Boolean);
+  const error = lines.reverse().find(line => /^ERROR:/.test(line));
+  return (error || lines[0] || '').replace(/^ERROR:\s*/, '');
+}
+
+function runYtDlp(args, timeout, signal) {
+  const runtime = CONFIG.youtube.jsRuntime ? ['--js-runtimes', CONFIG.youtube.jsRuntime] : [];
+  return new Promise((resolve, reject) => {
+    execFile(
+      CONFIG.youtube.ytdlpPath,
+      runtime.concat(args),
+      { timeout, maxBuffer: 16 * 1024 * 1024, signal },
+      (error, stdout, stderr) => {
+        if (error) return reject(new Error(ytDlpError(stderr) || error.message || 'échec de yt-dlp'));
+        resolve(String(stdout));
+      }
+    );
+  });
+}
+
+function detectYtDlp() {
+  return new Promise(resolve => {
+    execFile(CONFIG.youtube.ytdlpPath, ['--version'], { timeout: 15000 },
+      (error, stdout) => resolve(error ? null : (lastLine(stdout) || 'présent')));
+  });
+}
+
+const runsText = text => ((text && text.runs) || []).map(run => run.text || '').join('');
+
+// "3:45" ou "1:02:03" -> secondes ; 0 si ce n'est pas une durée
+function durationSeconds(text) {
+  const clean = String(text || '').trim();
+  if (!/^\d+(:\d{1,2}){1,2}$/.test(clean)) return 0;
+  return clean.split(':').reduce((total, part) => total * 60 + Number(part), 0);
+}
+
+// Toutes les lignes de résultat, où qu'elles soient dans la réponse : la
+// structure exacte change d'une version du site à l'autre.
+function collectRenderers(node, key, found = []) {
+  if (!node || typeof node !== 'object') return found;
+  if (Array.isArray(node)) {
+    for (const item of node) collectRenderers(item, key, found);
+    return found;
+  }
+  for (const [name, value] of Object.entries(node)) {
+    if (name === key) found.push(value);
+    else collectRenderers(value, key, found);
+  }
+  return found;
+}
+
+// Pochette en grand : les adresses de YouTube Music portent leur taille
+function largeThumbnail(url, videoId) {
+  if (url && /googleusercontent\.com|ggpht\.com/.test(url)) {
+    return url.replace(/=w\d+-h\d+/, '=w544-h544');
+  }
+  return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+}
+
+function youtubeTrack({ videoId, title, artist, album, duration, thumbnail }) {
+  const cover = largeThumbnail(thumbnail, videoId);
+  return {
+    source: 'youtube',
+    id: videoId,
+    title: String(title),
+    artist: String(artist || 'Inconnu'),
+    album: album || null,
+    duration: duration || 0,
+    coverArt: cover,
+    coverUrl: cover,        // pochette d'origine, si la copie locale disparaît
+    youtubeId: videoId
+  };
+}
+
+// Une ligne de résultat YouTube Music -> piste, ou null
+function youtubeMusicEntry(renderer) {
+  const columns = (renderer.flexColumns || []).map(column =>
+    (column.musicResponsiveListItemFlexColumnRenderer || {}).text || {});
+
+  const firstRun = ((columns[0] || {}).runs || [])[0] || {};
+  const videoId = (renderer.playlistItemData && renderer.playlistItemData.videoId)
+    || ((firstRun.navigationEndpoint || {}).watchEndpoint || {}).videoId;
+  const title = runsText(columns[0]).trim();
+  if (!videoId || !YOUTUBE_ID.test(videoId) || !title) return null;
+
+  // Deuxième colonne : « Artiste • Album • 3:45 », chaque élément lié à sa page
+  const artists = [];
+  let album = null;
+  let duration = 0;
+  for (const run of (columns[1] || {}).runs || []) {
+    const text = String(run.text || '').trim();
+    const browse = (run.navigationEndpoint || {}).browseEndpoint || {};
+    const pageType = String((((browse.browseEndpointContextSupportedConfigs || {})
+      .browseEndpointContextMusicConfig) || {}).pageType || '');
+
+    if (/ARTIST|USER_CHANNEL/.test(pageType)) artists.push(text);
+    else if (/ALBUM/.test(pageType)) album = text;
+    else if (durationSeconds(text)) duration = durationSeconds(text);
+  }
+
+  // Artiste sans lien : premier segment qui n'est ni un type ni une durée
+  if (!artists.length) {
+    const plain = runsText(columns[1]).split(' • ').map(part => part.trim())
+      .find(part => part && !durationSeconds(part) && !/^(song|video|single|ep|album)$/i.test(part));
+    if (plain) artists.push(plain);
+  }
+
+  // Selon la mise en page, la durée est dans une colonne fixe
+  if (!duration) {
+    for (const column of renderer.fixedColumns || []) {
+      duration = durationSeconds(runsText((column.musicResponsiveListItemFixedColumnRenderer || {}).text));
+      if (duration) break;
+    }
+  }
+
+  const thumbnails = (((renderer.thumbnail || {}).musicThumbnailRenderer || {}).thumbnail || {}).thumbnails || [];
+  const thumbnail = thumbnails.length ? thumbnails[thumbnails.length - 1].url : null;
+
+  return youtubeTrack({ videoId, title, artist: artists.join(', '), album, duration, thumbnail });
+}
+
+async function searchYoutubeMusic(query, signal) {
+  const response = await axios.post(YTM_SEARCH_URL,
+    { context: { client: YTM_CLIENT }, query, params: YTM_SONGS_FILTER },
+    { headers: YTM_HEADERS, timeout: CONFIG.youtube.searchTimeoutMs, signal });
+
+  return collectRenderers(response.data, 'musicResponsiveListItemRenderer')
+    .map(youtubeMusicEntry)
+    .filter(Boolean);
+}
+
+// Repli : recherche YouTube classique, l'artiste est le nom de la chaîne
+// (« Artiste - Topic » pour les chaînes générées par YouTube Music)
+async function searchYoutubeVideos(query, signal) {
+  const stdout = await runYtDlp(
+    ['--flat-playlist', '--dump-single-json', '--no-warnings',
+     `ytsearch${CONFIG.youtube.maxResults}:${query}`],
+    CONFIG.youtube.searchTimeoutMs, signal);
+
+  const data = JSON.parse(stdout);
+  return (data.entries || [])
+    .filter(entry => entry && YOUTUBE_ID.test(String(entry.id || '')) && entry.title)
+    .map(entry => youtubeTrack({
+      videoId: entry.id,
+      title: entry.title,
+      artist: String(entry.channel || entry.uploader || '').replace(/\s+-\s+Topic$/i, ''),
+      duration: Math.round(entry.duration || 0),
+      thumbnail: null
+    }));
+}
+
+async function searchYoutube(query, signal) {
+  if (!youtubeAvailable()) return [];
+  const aborted = () => Boolean(signal && signal.aborted);
+  let results = [];
+
+  try {
+    results = await searchYoutubeMusic(query, signal);
+  } catch (error) {
+    if (aborted()) return [];
+    console.error('YouTube Music : recherche impossible —', error.message,
+      '→ repli sur la recherche YouTube (yt-dlp)');
+  }
+
+  if (!results.length && !aborted()) {
+    try {
+      results = await searchYoutubeVideos(query, signal);
+    } catch (error) {
+      if (!aborted()) console.error('YouTube : recherche yt-dlp impossible —', error.message);
+      return [];
+    }
+  }
+
+  // Un même titre peut apparaître dans plusieurs rubriques de la réponse
+  const seen = new Set();
+  const selected = results
+    .filter(track => !seen.has(track.id) && seen.add(track.id))
+    .slice(0, CONFIG.youtube.maxResults);
+
+  for (const track of selected) remoteResults.set(track.id, track);
+  console.log(`YouTube Music : ${selected.length} résultat(s) pour « ${query} »`);
+  return selected;
+}
+
+async function downloadYoutube(track, dir) {
+  if (!YOUTUBE_ID.test(String(track.youtubeId || ''))) throw new Error('identifiant YouTube invalide');
+
+  await runYtDlp([
+    '--no-playlist', '--no-progress', '--no-warnings', '--no-mtime',
+    '-f', CONFIG.youtube.format,
+    '-o', path.join(dir, '%(id)s.%(ext)s'),
+    `https://www.youtube.com/watch?v=${track.youtubeId}`
+  ], CONFIG.youtube.downloadTimeoutMs);
+}
+
+// Les fichiers YouTube n'ont pas de pochette intégrée : on enregistre la
+// vignette à côté, pour le cache et pour la couleur de l'écran de lecture
+// (une image d'une autre origine y est illisible).
+async function saveYoutubeCover(track, entry, dir) {
+  const url = track.coverUrl || track.coverArt;
+  if (!/^https:\/\//.test(String(url || ''))) return;
+
+  try {
+    const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
+    const type = String(response.headers['content-type'] || '').split(';')[0].toLowerCase();
+    const target = path.join(dir, 'cover' + (COVER_EXTENSIONS[type] || '.jpg'));
+    fs.writeFileSync(target, Buffer.from(response.data));
+    entry.cover = target;
+    track.coverArt = `/api/cover/soulseek/${track.id}`;
+  } catch (error) {
+    console.error(`Pochette YouTube : téléchargement impossible — ${error.message}`);
+  }
 }
 
 // ---- Métadonnées et pochette embarquées ----
@@ -1033,7 +1470,7 @@ function findAudioFile(dir) {
 function queueDownload(track) {
   if (downloads.has(track.id)) return;
   if (servirDepuisCache(track)) return;   // deja joue : pas de telechargement
-  if (!soulseekAvailable() || !track.slskLink) return;
+  if (!downloadPossible(track)) return;
 
   downloads.set(track.id, { status: 'pending', file: null, error: null, startedAt: Date.now() });
   downloadQueue.push(track);
@@ -1061,10 +1498,14 @@ async function runDownload(track) {
   try {
     fs.mkdirSync(dir, { recursive: true });
 
-    await runSockseek(
-      [track.slskLink, '-p', dir].concat(remoteArgs()),
-      CONFIG.soulseek.downloadTimeoutMs
-    );
+    if (track.source === 'youtube') {
+      await downloadYoutube(track, dir);
+    } else {
+      await runSockseek(
+        [track.slskLink, '-p', dir].concat(remoteArgs()),
+        CONFIG.soulseek.downloadTimeoutMs
+      );
+    }
 
     // Un autre thread a pu supprimer la piste entre-temps
     if (downloads.get(track.id) !== entry || entry.status === 'deleted') return;
@@ -1074,13 +1515,17 @@ async function runDownload(track) {
 
     entry.file = file;
     entry.status = 'ready';
-    console.log(`Soulseek : "${track.title}" prêt (${path.basename(file)})`);
+    console.log(`${sourceName(track)} : "${track.title}" prêt (${path.basename(file)})`);
 
     await applyEmbeddedMetadata(track, entry, dir);
+    if (handleTooLongDownload(track)) return;
+    if (track.source === 'youtube' && !entry.cover) await saveYoutubeCover(track, entry, dir);
+    if (!entry.cover) fallbackCoverForDownload(track, entry);
   } catch (error) {
     entry.status = 'failed';
     entry.error = error.message;
-    console.error(`Soulseek : échec du téléchargement de "${track.title}" — ${explainSockseekError(error.message)}`);
+    const detail = track.source === 'youtube' ? error.message : explainSockseekError(error.message);
+    console.error(`${sourceName(track)} : échec du téléchargement de "${track.title}" — ${detail}`);
     removeDownloadDir(track.id);
     handleFailedDownload(track, error.message);
   }
@@ -1094,6 +1539,17 @@ async function applyEmbeddedMetadata(track, entry, dir) {
   } catch (error) {
     console.error(`Métadonnées illisibles pour "${track.title}" — ${error.message}`);
     return;
+  }
+
+  // Lecture rapide sans durée (certains MP3) : on la calcule si la limite
+  // de durée doit être vérifiée.
+  if (!(parsed && parsed.format && parsed.format.duration > 0) && CONFIG.maxSongMinutes > 0) {
+    try {
+      const mm = await import('music-metadata');
+      parsed = await mm.parseFile(entry.file, { duration: true, skipPostHeaders: true });
+    } catch (error) {
+      console.error(`Durée illisible pour "${track.title}" — ${error.message}`);
+    }
   }
 
   const tags = (parsed && parsed.common) || {};
@@ -1147,9 +1603,12 @@ function discardDownload(id, forget) {
   removeDownloadDir(id);
   downloadQueue = downloadQueue.filter(t => t.id !== id);
 
-  // La pochette vivait dans le dossier supprimé
-  const track = state.playlist.find(t => t.source === 'soulseek' && t.id === id);
-  if (track) track.coverArt = null;
+  // La pochette vivait dans le dossier supprimé. Une piste YouTube Music
+  // retrouve celle d'origine, toujours en ligne.
+  const track = state.playlist.find(t => isDownloadSource(t.source) && t.id === id);
+  if (track && String(track.coverArt || '').startsWith('/api/cover/')) {
+    track.coverArt = track.coverUrl || null;
+  }
 
   if (forget) {
     downloads.delete(id);
@@ -1167,7 +1626,7 @@ function removePlaylistIndex(index) {
   if (index < 0 || index >= state.playlist.length) return null;
 
   const [removed] = state.playlist.splice(index, 1);
-  if (removed && removed.source === 'soulseek') discardDownload(removed.id, true);
+  if (removed && isDownloadSource(removed.source)) discardDownload(removed.id, true);
 
   if (index < state.currentTrackIndex) state.currentTrackIndex -= 1;
   if (state.currentTrackIndex >= state.playlist.length) {
@@ -1201,7 +1660,7 @@ function handleFailedDownload(track, reason) {
   // le téléchargement, ils partagent donc l'échec. Une piste déjà jouée (ou
   // en cours de lecture) a eu son tour : on n'y touche pas.
   const doomed = state.playlist.filter(entry =>
-    entry.source === 'soulseek' && entry.id === track.id && !entry.played);
+    entry.source === track.source && entry.id === track.id && !entry.played);
 
   for (const entry of doomed) {
     const index = state.playlist.indexOf(entry);
@@ -1218,8 +1677,33 @@ function handleFailedDownload(track, reason) {
   }
 }
 
+// Durée réelle connue après téléchargement : une chanson d'invité trop
+// longue est retirée et son crédit rendu, comme un téléchargement échoué.
+// Les pistes de l'admin ne sont pas limitées. Renvoie true si retirée.
+function handleTooLongDownload(track) {
+  if (!tooLong(track.duration)) return false;
+
+  const doomed = state.playlist.filter(entry =>
+    entry.source === track.source && entry.id === track.id && !entry.played && entry.addedById);
+  if (!doomed.length) return false;
+
+  const reason = tooLongReason(track.title, track.duration);
+  for (const entry of doomed) {
+    const index = state.playlist.indexOf(entry);
+    if (index === -1) continue;   // retirée entre-temps par l'admin
+
+    removePlaylistIndex(index);
+    const user = refundUserCredit(entry,
+      `${reason}. Elle a été retirée de la playlist et votre crédit vous a été rendu.`);
+
+    console.log(`Playlist : "${entry.title}" retirée (trop longue)`
+      + (user ? ` — crédit rendu à ${user.name}` : ''));
+  }
+  return true;
+}
+
 function discardPlayedTrack(track) {
-  if (!track || track.source !== 'soulseek') return;
+  if (!track || !isDownloadSource(track.source)) return;
   mettreEnCache(track);   // avant la suppression : le fichier est encore la
   if (!CONFIG.soulseek.deleteAfterPlay) return;
 
@@ -1227,7 +1711,7 @@ function discardPlayedTrack(track) {
   // l'ont demande) : supprimer le fichier de celui qui vient de finir
   // couperait la lecture de celui qui commence, puisqu'ils le partagent.
   const current = state.playlist[state.currentTrackIndex];
-  if (current && current.source === 'soulseek' && current.id === track.id) return;
+  if (current && current.source === track.source && current.id === track.id) return;
 
   discardDownload(track.id);
 }
@@ -1346,9 +1830,21 @@ function mettreEnCache(track) {
   const cle = cleCache(track);
   if (cle === '|') return;
 
-  // Deja en cache (servi depuis le cache, ou rejoue) : on note l'usage
+  // Deja en cache (servi depuis le cache, ou rejoue) : on note l'usage,
+  // et on garde la pochette trouvée entre-temps s'il n'en avait pas
   if (cacheIndex[cle]) {
-    cacheIndex[cle].dernierUsage = Date.now();
+    const e = cacheIndex[cle];
+    e.dernierUsage = Date.now();
+    if (!e.pochette && entry.cover) {
+      try {
+        const pochette = `${idCache(cle)}-pochette${path.extname(entry.cover).toLowerCase()}`;
+        fs.copyFileSync(entry.cover, path.join(CACHE_DIR, pochette));
+        e.pochette = pochette;
+        e.taille += fs.statSync(entry.cover).size;
+      } catch (error) {
+        console.error(`Cache : pochette non conservée — ${error.message}`);
+      }
+    }
     sauverCache();
     return;
   }
@@ -1375,7 +1871,10 @@ function mettreEnCache(track) {
       ajouteLe: Date.now(),
       dernierUsage: Date.now(),
       slskLink: track.slskLink || null,
-      username: track.username || null
+      username: track.username || null,
+      source: track.source,
+      youtubeId: track.youtubeId || null,
+      coverUrl: track.coverUrl || null
     };
 
     console.log(`Cache : "${track.artist} — ${track.title}" conservé (${enMo(tailleCache())} / ${enMo(CONFIG.soulseek.cacheMaxBytes)})`);
@@ -1407,10 +1906,12 @@ function servirDepuisCache(track) {
     ? path.join(CACHE_DIR, e.pochette)
     : null;
 
-  downloads.set(track.id, {
+  const servi = {
     status: 'ready', file: fichier, cover: pochette, error: null,
     startedAt: Date.now(), fromCache: true
-  });
+  };
+  downloads.set(track.id, servi);
+  if (!pochette) fallbackCoverForDownload(track, servi);
 
   if (e.duration > 0) track.duration = e.duration;
   if (e.album) track.album = e.album;
@@ -1438,21 +1939,23 @@ function chercherCache(query) {
     .slice(0, 10)
     .map(([cle, e]) => {
       const track = {
-        source: 'soulseek',
+        source: e.source || 'soulseek',
         id: idCache(cle),
         title: e.title,
         artist: e.artist,
         album: e.album,
         duration: e.duration,
-        coverArt: null,
+        coverArt: e.coverUrl || null,
         format: path.extname(e.fichier).slice(1),
         cached: true,
         cacheKey: cle,
         slskLink: e.slskLink,
-        username: e.username
+        username: e.username,
+        youtubeId: e.youtubeId || null,
+        coverUrl: e.coverUrl || null
       };
-      // Meme circuit qu'un resultat Soulseek : l'ajout le retrouve ici
-      soulseekResults.set(track.id, track);
+      // Meme circuit qu'un resultat Soulseek ou YouTube : l'ajout le retrouve ici
+      remoteResults.set(track.id, track);
       return track;
     });
 }
@@ -1483,12 +1986,105 @@ function publicTrack(track, includeLyrics) {
     delete view.plainLyrics;
   }
 
-  if (track.source === 'soulseek') {
+  if (isDownloadSource(track.source)) {
     const entry = downloads.get(track.id);
     view.downloadStatus = entry ? entry.status : 'absent';
+    // Copie temporaire supprimée, mais le morceau reste dans le cache :
+    // rejoué, il repart aussitôt sans nouveau téléchargement.
+    if (view.downloadStatus === 'deleted' && cacheActif
+        && cacheIndex[track.cacheKey || cleCache(track)]) {
+      view.downloadStatus = 'cached';
+    }
     view.downloadError = entry ? entry.error : null;
   }
   return view;
+}
+
+// ============= POCHETTE DE SECOURS (DEEZER) =============
+// Seulement pour une piste sans pochette. L'API de recherche publique de
+// Deezer ne demande aucune clé ; on exige que l'artiste et le titre
+// correspondent (mentions entre parenthèses ignorées) : une pochette
+// fausse est pire que pas de pochette. L'image est enregistrée en
+// local (même origine : l'écran de lecture peut en lire la couleur) dans
+// le dossier des téléchargements, vidé à chaque démarrage.
+const COVER_LOOKUP_DIR = path.join(SOULSEEK_DIR, '_pochettes');
+const coverLookups = new Map();   // clé du morceau -> Promise<chemin | null>
+
+function sameArtist(a, b) {
+  const na = netCache(a);
+  const nb = netCache(b);
+  return Boolean(na && nb) && (na === nb || na.includes(nb) || nb.includes(na));
+}
+
+async function fetchDeezerCover(track, cle) {
+  const target = path.join(COVER_LOOKUP_DIR, idCache(cle) + '.jpg');
+  if (fs.existsSync(target)) return target;
+
+  const artist = cleanForLyrics(track.artist);
+  const title = cleanForLyrics(track.title).replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').trim();
+  const titre = titleKey(title);
+  const memeTitre = (h) => {
+    const t = titleKey(cleanForLyrics(h.title));
+    return Boolean(t) && (t === titre || t.includes(titre) || titre.includes(t));
+  };
+  const requetes = [`artist:"${artist}" track:"${title}"`, `${artist} ${title}`];
+
+  for (const q of requetes) {
+    const { data } = await axios.get('https://api.deezer.com/search',
+      { params: { q, limit: 10 }, timeout: 8000 });
+    if (data && data.error) throw new Error(data.error.message || 'Deezer a refusé la requête');
+
+    const candidats = ((data && data.data) || []).filter(hit => hit.album && hit.album.cover_xl
+      && sameArtist(hit.artist && hit.artist.name, track.artist) && memeTitre(hit));
+    // Titre identique de préférence, sinon l'un contient l'autre (« Edit »...)
+    const hit = candidats.find(h => titleKey(cleanForLyrics(h.title)) === titre) || candidats[0];
+    if (!hit) continue;
+
+    const image = await axios.get(hit.album.cover_xl, { responseType: 'arraybuffer', timeout: 15000 });
+    fs.mkdirSync(COVER_LOOKUP_DIR, { recursive: true });
+    fs.writeFileSync(target, Buffer.from(image.data));
+    console.log(`Pochette : trouvée sur Deezer pour "${track.artist} — ${track.title}" (album « ${hit.album.title} »)`);
+    return target;
+  }
+
+  console.log(`Pochette : rien sur Deezer pour "${track.artist} — ${track.title}"`);
+  return null;
+}
+
+// Une seule recherche par morceau ; une erreur réseau sera retentée plus tard
+function lookupCover(track) {
+  // Variantes « (Radio Edit) », extension .mp3 : même recherche
+  const cle = `${titleKey(track.artist)}|${titleKey(cleanForLyrics(track.title))}`;
+  if (!netCache(track.artist) || !netCache(track.title) || netCache(track.artist) === 'inconnu') {
+    return Promise.resolve(null);
+  }
+  if (!coverLookups.has(cle)) {
+    coverLookups.set(cle, fetchDeezerCover(track, cle).catch((error) => {
+      console.error(`Pochette : recherche Deezer impossible — ${error.message}`);
+      coverLookups.delete(cle);
+      return null;
+    }));
+  }
+  return coverLookups.get(cle);
+}
+
+// Fichier téléchargé (ou servi par le cache) sans pochette : celle trouvée
+// devient la sienne, elle partira donc aussi dans le cache.
+function fallbackCoverForDownload(track, entry) {
+  lookupCover(track).then((file) => {
+    if (!file || entry.cover || downloads.get(track.id) !== entry) return;
+    entry.cover = file;
+    state.playlist
+      .filter(t => t.source === track.source && t.id === track.id)
+      .forEach((t) => { t.coverArt = `/api/cover/soulseek/${track.id}`; });
+  });
+}
+
+// Piste en streaming (Navidrome) sans pochette
+function fallbackCoverForStream(track) {
+  lookupCover(track).then((file) => {
+    if (file && !track.coverArt) track.coverArt = `/api/cover/lookup/${path.basename(file, '.jpg')}`;
+  });
 }
 
 // ============= PAROLES (LRCLIB) =============
@@ -2159,25 +2755,31 @@ function guestUrl(req) {
 // interne du processus (SOULSEEK_PROCESS_OVERHEAD_MS) ne rallonge jamais la
 // barre de progression, cf. commentaire sur runSockseek.
 // Si Soulseek n'est pas disponible, on retombe sur un budget fixe de 10 s
-// pour la seule recherche Navidrome.
+// pour la seule recherche Navidrome. YouTube Music, interrogé en dernier,
+// ajoute son propre délai (YOUTUBE_SEARCH_TIMEOUT).
 function searchMaxDurationMs() {
-  if (soulseekAvailable()) return CONFIG.soulseek.searchTimeMs;
-  return 10000;
+  let total = soulseekAvailable() ? CONFIG.soulseek.searchTimeMs : 10000;
+  if (youtubeAvailable()) total += CONFIG.youtube.searchTimeoutMs;
+  return total;
 }
 
 app.get('/api/config', (req, res) => {
   res.json({
     maxSongsPerUser: CONFIG.maxSongsPerUser,
     cooldownMinutes: CONFIG.cooldownMinutes,
-    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    shortQueueSongs: CONFIG.shortQueueSongs,
+    maxSongMinutes: CONFIG.maxSongMinutes,
     searchMaxMs: searchMaxDurationMs(),
     fadeSeconds: CONFIG.fadeSeconds,
     guestUrl: guestUrl(req),
     sources: {
       navidrome: CONFIG.navidrome.enabled,
-      soulseek: soulseekAvailable()
+      soulseek: soulseekAvailable(),
+      youtube: youtubeAvailable()
     },
-    fallbackMode: CONFIG.fallback.mode
+    fallbackMode: CONFIG.fallback.mode,
+    // Effets de l'ecran de lecture (et barre de reactions des invites)
+    display: Object.assign({ reactionsList: REACTIONS }, CONFIG.display)
   });
 });
 
@@ -2208,10 +2810,10 @@ app.post('/api/guest/login', (req, res) => {
     userId: user.id,
     name: user.name,
     canAdd: canUserAddSong(user),
-    addedSongs: user.addedSongs.length,
-    maxSongs: CONFIG.maxSongsPerUser,
+    addedSongs: pendingSongs(user).length,
+    maxSongs: userSongLimit(user),
     cooldownMinutes: CONFIG.cooldownMinutes,
-    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    shortQueueSongs: CONFIG.shortQueueSongs,
     notices: activeNotices(user)
   });
 });
@@ -2227,31 +2829,109 @@ app.get('/api/guest/info/:userId', (req, res) => {
     userId: user.id,
     name: user.name,
     canAdd: canUserAddSong(user),
-    addedSongs: user.addedSongs.length,
-    maxSongs: CONFIG.maxSongsPerUser,
+    addedSongs: pendingSongs(user).length,
+    maxSongs: userSongLimit(user),
     cooldownMinutes: CONFIG.cooldownMinutes,
-    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    shortQueueSongs: CONFIG.shortQueueSongs,
     notices: activeNotices(user)
   });
 });
 
-// ---- Recherche et ajout : logique commune aux invités et à l'admin ----
+// ============= ECRAN DE LECTURE : FIL D'EVENEMENTS =============
+// Annonces d'ajout et reactions des invites, relues par l'ecran de lecture
+// (GET /api/feed?since=N, environ chaque seconde). Seuls les derniers
+// evenements sont gardes : un ecran ouvert plus tard ne rejoue pas la soiree.
+const FEED_MAX = 100;
+const REACTIONS = ['🔥', '❤️', '😂'];
+const REACTION_MIN_INTERVAL_MS = 1500;   // entre deux reactions d'un meme invite
+let feedSeq = 0;
+let feed = [];
 
-// La bibliothèque locale d'abord, Soulseek en secours quand elle ne donne rien.
-async function runSearch(query, signal) {
-  let results = await searchNavidrome(query);
-  let searchedSoulseek = false;
+function pushFeed(event) {
+  feedSeq += 1;
+  feed.push(Object.assign({ seq: feedSeq, at: Date.now() }, event));
+  if (feed.length > FEED_MAX) feed = feed.slice(-FEED_MAX);
+}
 
-  // Morceaux deja joues et gardes en cache, sauf s'ils sont dans Navidrome
-  const dansNavidrome = new Set(results.map(trackKey));
-  results = results.concat(chercherCache(query).filter(t => !dansNavidrome.has(trackKey(t))));
+app.get('/api/feed', (req, res) => {
+  const since = parseInt(req.query.since, 10);
+  // Premier appel, ou serveur redemarre depuis : on part de maintenant
+  if (!Number.isFinite(since) || since > feedSeq) {
+    return res.json({ seq: feedSeq, events: [] });
+  }
+  res.json({ seq: feedSeq, events: feed.filter(event => event.seq > since) });
+});
 
-  if (results.length === 0 && soulseekAvailable()) {
-    searchedSoulseek = true;
-    results = await searchSoulseek(query, signal);
+app.post('/api/reaction', (req, res) => {
+  if (!CONFIG.display.reactions) {
+    return res.status(404).json({ error: 'Réactions désactivées' });
   }
 
-  return { results, searchedSoulseek };
+  const { userId, emoji } = req.body || {};
+  const user = findUserById(userId);
+  if (!user) return res.status(403).json({ error: 'Utilisateur non autorisé' });
+  if (!REACTIONS.includes(emoji)) return res.status(400).json({ error: 'Réaction inconnue' });
+
+  // Un pouce qui s'emballe ne doit pas noyer l'ecran
+  const now = Date.now();
+  if (user.lastReactionAt && now - user.lastReactionAt < REACTION_MIN_INTERVAL_MS) {
+    return res.status(429).json({ error: 'Doucement !' });
+  }
+  user.lastReactionAt = now;
+
+  pushFeed({ type: 'reaction', emoji });
+  res.json({ success: true });
+});
+
+// ---- Recherche et ajout : logique commune aux invités et à l'admin ----
+
+// La bibliothèque locale d'abord, puis Soulseek, puis YouTube Music. Une
+// source qui renvoie moins de SEARCH_MIN_RESULTS resultats fait aussi
+// interroger la suivante ; les resultats de toutes s'additionnent.
+const SEARCH_MIN_RESULTS = 3;
+
+async function runSearch(query, signal) {
+  const navidrome = await searchNavidrome(query);
+
+  // Morceaux deja joues et gardes en cache, sauf s'ils sont dans Navidrome.
+  // Ils ne comptent pas comme un resultat : ils s'affichent apres Navidrome,
+  // en tete des sources suivantes.
+  const dejaVus = new Set(navidrome.map(trackKey));
+  const cache = chercherCache(query).filter(t => !dejaVus.has(trackKey(t)));
+  for (const t of cache) dejaVus.add(trackKey(t));
+
+  // Garde les morceaux pas encore proposes et les marque comme vus
+  const nouveaux = tracks => tracks.filter(t => {
+    const cle = trackKey(t);
+    if (dejaVus.has(cle)) return false;
+    dejaVus.add(cle);
+    return true;
+  });
+  const annule = () => signal && signal.aborted;
+
+  // Nombre de resultats de la derniere source interrogee
+  let dernierCompte = navidrome.length;
+
+  let soulseek = [];
+  let searchedSoulseek = false;
+  if (dernierCompte < SEARCH_MIN_RESULTS && soulseekAvailable() && !annule()) {
+    searchedSoulseek = true;
+    soulseek = nouveaux(await searchSoulseek(query, signal));
+    dernierCompte = soulseek.length;
+  }
+
+  let youtube = [];
+  let searchedYoutube = false;
+  if (dernierCompte < SEARCH_MIN_RESULTS && youtubeAvailable() && !annule()) {
+    searchedYoutube = true;
+    youtube = nouveaux(await searchYoutube(query, signal));
+  }
+
+  return {
+    results: navidrome.concat(cache, soulseek, youtube),
+    searchedSoulseek,
+    searchedYoutube
+  };
 }
 
 // Vue client d'un résultat. Le lien slsk:// reste côté serveur : il révèle le
@@ -2259,6 +2939,7 @@ async function runSearch(query, signal) {
 // laisser cliquer pour un refus.
 function searchResultView(track) {
   const vue = publicTrack(track, false);
+  if (tooLong(track.duration)) vue.tooLong = true;   // grisé côté invité
   const doublon = findPlaylistDuplicate(track);
   if (doublon) {
     vue.inPlaylist = true;
@@ -2280,28 +2961,43 @@ function addToPlaylist(song, user) {
     played: false
   };
 
-  // Le client n'envoie qu'une vue publique : on récupère le lien slsk://
-  // depuis les résultats de recherche gardés côté serveur.
-  if (song.source === 'soulseek') {
-    const known = soulseekResults.get(song.id);
-    if (!known) {
-      const expire = new Error('Résultat Soulseek expiré, relancez la recherche');
+  // Le client n'envoie qu'une vue publique : on récupère le lien slsk:// ou
+  // l'identifiant YouTube depuis les résultats gardés côté serveur.
+  if (isDownloadSource(song.source)) {
+    const known = remoteResults.get(song.id);
+    if (!known || known.source !== song.source) {
+      const expire = new Error(`Résultat ${sourceName(song)} expiré, relancez la recherche`);
       expire.status = 400;
       throw expire;
     }
-    playlistEntry.slskLink = known.slskLink;
-    playlistEntry.username = known.username;
+    if (known.slskLink) playlistEntry.slskLink = known.slskLink;
+    if (known.username) playlistEntry.username = known.username;
+    if (known.youtubeId) playlistEntry.youtubeId = known.youtubeId;
+    if (known.coverUrl) playlistEntry.coverUrl = known.coverUrl;
     if (known.cacheKey) playlistEntry.cacheKey = known.cacheKey;
   }
 
-  state.playlist.push(playlistEntry);
+  // Invité : ordre par tours. Admin : à la fin, comme avant.
+  if (user && state.playlist.length) {
+    playlistEntry.priority = isPrioritySong(user);
+    const position = fairInsertIndex(user.id, playlistEntry.priority);
+    state.playlist.splice(position, 0, playlistEntry);   // toujours après le morceau courant
+  } else {
+    state.playlist.push(playlistEntry);
+  }
+
+  // Pas de pochette (Navidrome) : recherche de secours en arrière-plan.
+  // Les téléchargements la cherchent une fois le fichier lu (tags d'abord).
+  if (!playlistEntry.coverArt && !isDownloadSource(playlistEntry.source)) {
+    fallbackCoverForStream(playlistEntry);
+  }
 
   // Les paroles ne doivent pas retarder la réponse : LRCLIB peut enchaîner
   // plusieurs requêtes, on le fait en arrière-plan.
   fetchLyricsFor(playlistEntry);
 
   // Téléchargement anticipé : le morceau doit être prêt à son tour
-  if (playlistEntry.source === 'soulseek') queueDownload(playlistEntry);
+  if (isDownloadSource(playlistEntry.source)) queueDownload(playlistEntry);
 
   // Une chanson vient d'arriver : la musique d'attente doit s'effacer,
   // tout de suite s'il s'agit d'une webradio.
@@ -2332,7 +3028,7 @@ app.get('/api/search', async (req, res) => {
   }
 
   try {
-    const { results, searchedSoulseek } = await runSearch(q, abort.signal);
+    const { results, searchedSoulseek, searchedYoutube } = await runSearch(q, abort.signal);
 
     if (abort.signal.aborted) return;   // client parti : plus rien a renvoyer
 
@@ -2340,8 +3036,10 @@ app.get('/api/search', async (req, res) => {
     res.json({
       results: results.map(searchResultView),
       searchedSoulseek,
+      searchedYoutube,
       canAdd: canUserAddSong(user),
-      userAddedCount: user.addedSongs.length
+      userAddedCount: pendingSongs(user).length,
+      maxSongMinutes: CONFIG.maxSongMinutes
     });
   } catch (error) {
     if (abort.signal.aborted) return;   // recherche annulee par le client
@@ -2375,22 +3073,31 @@ app.post('/api/playlist/add', async (req, res) => {
     });
   }
 
+  // Durée max : la copie gardée côté serveur fait foi quand elle existe
+  const known = isDownloadSource(song.source) ? remoteResults.get(song.id) : null;
+  const duree = Number((known && known.duration) || song.duration) || 0;
+  if (tooLong(duree)) {
+    return res.status(400).json({ tooLong: true, error: tooLongReason(song.title, duree) });
+  }
+
   const canAdd = canUserAddSong(user);
   if (!canAdd.allowed) {
     return res.status(429).json({ error: canAdd.reason });
   }
 
   try {
-    addToPlaylist(song, user);
+    const entry = addToPlaylist(song, user);
+    if (CONFIG.display.addToast) {
+      pushFeed({ type: 'add', name: user.name, title: entry.title, artist: entry.artist });
+    }
 
-    user.addedSongs.push({ id: song.id, at: Date.now() });
     user.totalAdded = (user.totalAdded || 0) + 1;
-    user.lastAddTime = Date.now();
+    user.lastAddTime = entry.addedAt;
 
     res.json({
       success: true,
       playlistLength: state.playlist.length,
-      yourSongsCount: user.addedSongs.length
+      yourSongsCount: pendingSongs(user).length
     });
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message });
@@ -2432,7 +3139,7 @@ app.post('/api/playlist/remove', (req, res) => {
   res.json({
     success: true,
     playlistLength: state.playlist.length,
-    yourSongsCount: user.addedSongs.length,
+    yourSongsCount: pendingSongs(user).length,
     canAdd: canUserAddSong(user)
   });
 });
@@ -2443,7 +3150,7 @@ app.get('/api/playlist', (req, res) => {
   // Conditionné à la lecture en cours, sinon la fin de playlist relancerait
   // aussitôt le téléchargement qu'elle vient de supprimer.
   const current = state.playlist[state.currentTrackIndex];
-  if (current && current.source === 'soulseek' && state.isPlaying
+  if (current && isDownloadSource(current.source) && state.isPlaying
       && downloadStatus(current.id) === 'deleted') {
     downloads.delete(current.id);
     queueDownload(current);
@@ -2472,7 +3179,8 @@ app.get('/api/admin/settings', (req, res) => {
   res.json({
     maxSongsPerUser: CONFIG.maxSongsPerUser,
     cooldownMinutes: CONFIG.cooldownMinutes,
-    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    shortQueueSongs: CONFIG.shortQueueSongs,
+    maxSongMinutes: CONFIG.maxSongMinutes,
     fadeSeconds: CONFIG.fadeSeconds,
     soulseekSearchSeconds: Math.round(CONFIG.soulseek.searchTimeMs / 1000)
   });
@@ -2498,12 +3206,20 @@ app.put('/api/admin/settings', (req, res) => {
     CONFIG.cooldownMinutes = Math.round(cd * 100) / 100;
   }
 
-  if (body.quotaWindowMinutes !== undefined) {
-    const win = Number(body.quotaWindowMinutes);
-    if (!Number.isFinite(win) || win < 0 || win > 10080) {
-      return res.status(400).json({ error: 'Fenêtre du quota : entre 0 et 10080 minutes (7 jours)' });
+  if (body.shortQueueSongs !== undefined) {
+    const seuil = Number(body.shortQueueSongs);
+    if (!Number.isInteger(seuil) || seuil < 0 || seuil > 50) {
+      return res.status(400).json({ error: 'File courte : nombre entier entre 0 et 50' });
     }
-    CONFIG.quotaWindowMinutes = Math.round(win * 100) / 100;
+    CONFIG.shortQueueSongs = seuil;
+  }
+
+  if (body.maxSongMinutes !== undefined) {
+    const duree = Number(body.maxSongMinutes);
+    if (!Number.isFinite(duree) || duree < 0 || duree > 120) {
+      return res.status(400).json({ error: 'Durée max : entre 0 et 120 minutes' });
+    }
+    CONFIG.maxSongMinutes = Math.round(duree * 10) / 10;
   }
 
   if (body.fadeSeconds !== undefined) {
@@ -2523,14 +3239,15 @@ app.put('/api/admin/settings', (req, res) => {
   }
 
   console.log(`⚙ Réglages mis à jour : max=${CONFIG.maxSongsPerUser}, cooldown=${CONFIG.cooldownMinutes}min,`
-    + ` fenêtre=${CONFIG.quotaWindowMinutes}min, fondu=${CONFIG.fadeSeconds}s,`
+    + ` file courte=${CONFIG.shortQueueSongs}, durée max=${CONFIG.maxSongMinutes}min, fondu=${CONFIG.fadeSeconds}s,`
     + ` recherche Soulseek=${CONFIG.soulseek.searchTimeMs / 1000}s`);
 
   res.json({
     success: true,
     maxSongsPerUser: CONFIG.maxSongsPerUser,
     cooldownMinutes: CONFIG.cooldownMinutes,
-    quotaWindowMinutes: CONFIG.quotaWindowMinutes,
+    shortQueueSongs: CONFIG.shortQueueSongs,
+    maxSongMinutes: CONFIG.maxSongMinutes,
     fadeSeconds: CONFIG.fadeSeconds,
     soulseekSearchSeconds: Math.round(CONFIG.soulseek.searchTimeMs / 1000)
   });
@@ -2775,7 +3492,7 @@ app.post('/api/admin/users/:id/reset', (req, res) => {
   const user = findUserById(req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
 
-  user.addedSongs = [];
+  user.resetAt = Date.now();   // ses chansons en attente ne comptent plus
   user.totalAdded = 0;
   user.lastAddTime = 0;
   res.json({ success: true, user: adminUserView(user) });
@@ -2872,7 +3589,7 @@ function applyPlaybackAction(action, trackIndex, time) {
     // Le morceau suivant doit être prêt : on relance son téléchargement
     // s'il avait été supprimé lors d'un passage précédent.
     const upcoming = state.playlist[state.currentTrackIndex];
-    if (upcoming && upcoming.source === 'soulseek' && downloadStatus(upcoming.id) === 'deleted') {
+    if (upcoming && isDownloadSource(upcoming.source) && downloadStatus(upcoming.id) === 'deleted') {
       downloads.delete(upcoming.id);
       queueDownload(upcoming);
     }
@@ -2970,14 +3687,15 @@ app.get('/api/admin/search', async (req, res) => {
   }
 
   try {
-    const { results, searchedSoulseek } = await runSearch(q, abort.signal);
+    const { results, searchedSoulseek, searchedYoutube } = await runSearch(q, abort.signal);
 
     if (abort.signal.aborted) return;   // client parti : plus rien a renvoyer
 
     finished = true;
     res.json({
       results: results.map(searchResultView),
-      searchedSoulseek
+      searchedSoulseek,
+      searchedYoutube
     });
   } catch (error) {
     if (abort.signal.aborted) return;   // recherche annulee par le client
@@ -3082,7 +3800,7 @@ app.delete('/api/admin/playlist/:index', (req, res) => {
 // Clear playlist (admin) - conserve la liste des utilisateurs, remet les quotas à zéro
 app.post('/api/admin/playlist/clear', (req, res) => {
   for (const track of state.playlist) {
-    if (track.source === 'soulseek') discardDownload(track.id, true);
+    if (isDownloadSource(track.source)) discardDownload(track.id, true);
   }
   state.playlist = [];
   state.currentTrackIndex = 0;
@@ -3092,7 +3810,7 @@ app.post('/api/admin/playlist/clear', (req, res) => {
   state.adminPaused = false;   // la soirée repart : l'attente reprend la main
   majAttente();
   for (const user of state.users.values()) {
-    user.addedSongs = [];
+    user.resetAt = 0;
     user.totalAdded = 0;
     user.lastAddTime = 0;
   }
@@ -3337,7 +4055,7 @@ app.get('/api/stream/:source/:id', async (req, res) => {
       return await relayerFlux(song.streamUrl, req, res, 'Navidrome');
     }
 
-    if (source === 'soulseek') {
+    if (isDownloadSource(source)) {
       const entry = downloads.get(id);
 
       if (!entry) {
@@ -3346,7 +4064,7 @@ app.get('/api/stream/:source/:id', async (req, res) => {
 
       // Morceau rejoué après suppression : on le récupère à nouveau
       if (entry.status === 'deleted') {
-        const track = state.playlist.find(t => t.source === 'soulseek' && t.id === id);
+        const track = state.playlist.find(t => t.source === source && t.id === id);
         if (track) {
           downloads.delete(id);
           queueDownload(track);
@@ -3384,7 +4102,7 @@ app.get('/api/stream/:source/:id', async (req, res) => {
   }
 });
 
-// Pochette extraite d'un fichier Soulseek
+// Pochette d'un fichier téléchargé (Soulseek, YouTube Music ou cache)
 app.get('/api/cover/soulseek/:id', (req, res) => {
   const entry = downloads.get(req.params.id);
 
@@ -3393,6 +4111,14 @@ app.get('/api/cover/soulseek/:id', (req, res) => {
   }
 
   res.sendFile(entry.cover, error => {
+    if (error && !res.headersSent) res.status(404).end();
+  });
+});
+
+// Pochette de secours (Deezer) d'une piste en streaming
+app.get('/api/cover/lookup/:key', (req, res) => {
+  if (!/^cache-[0-9a-f]{12}$/.test(req.params.key)) return res.status(404).end();
+  res.sendFile(path.join(COVER_LOOKUP_DIR, req.params.key + '.jpg'), error => {
     if (error && !res.headersSent) res.status(404).end();
   });
 });
@@ -3423,7 +4149,9 @@ app.listen(PORT, async () => {
   console.log('\nConfiguration:');
   console.log(`- Max songs per user: ${CONFIG.maxSongsPerUser}`);
   console.log(`- Cooldown: ${CONFIG.cooldownMinutes} minutes`);
-  console.log(`- Fenêtre du quota: ${CONFIG.quotaWindowMinutes > 0 ? CONFIG.quotaWindowMinutes + ' minutes (glissant)' : 'désactivée (quota définitif)'}`);
+  console.log(`- File courte: ${CONFIG.shortQueueSongs > 0 ? 'moins de ' + CONFIG.shortQueueSongs + ' chansons à venir = ajout libre' : 'désactivée'}`);
+  console.log(`- Priorité: ${CONFIG.priorityFirstSongs > 0 ? CONFIG.priorityFirstSongs + ' première(s) chanson(s) de chaque invité en tête de tour' : 'aucune'}`);
+  console.log(`- Durée max (invités): ${CONFIG.maxSongMinutes > 0 ? CONFIG.maxSongMinutes + ' min' : 'sans limite'}`);
   console.log(`- Fondu entre les chansons: ${CONFIG.fadeSeconds > 0 ? CONFIG.fadeSeconds + ' s' : 'désactivé'}`);
   console.log(`- Navidrome: ${CONFIG.navidrome.enabled}`);
 
@@ -3438,12 +4166,16 @@ app.listen(PORT, async () => {
   }
   majAttente();
 
-  if (CONFIG.soulseek.enabled) {
+  // Dossier temporaire et cache servent à Soulseek comme à YouTube Music
+  if (CONFIG.soulseek.enabled || CONFIG.youtube.enabled) {
     resetDownloadDir();
     chargerCache();
     console.log(cacheActif
-      ? `- Cache Soulseek: ${Object.keys(cacheIndex).length} morceau(x), ${enMo(tailleCache())} / ${enMo(CONFIG.soulseek.cacheMaxBytes)} (${CACHE_DIR})`
-      : '- Cache Soulseek: désactivé');
+      ? `- Cache Soulseek / YouTube Music: ${Object.keys(cacheIndex).length} morceau(x), ${enMo(tailleCache())} / ${enMo(CONFIG.soulseek.cacheMaxBytes)} (${CACHE_DIR})`
+      : '- Cache Soulseek / YouTube Music: désactivé');
+  }
+
+  if (CONFIG.soulseek.enabled) {
     CONFIG.soulseek.version = await detectSockseek();
 
     if (CONFIG.soulseek.version) {
@@ -3480,13 +4212,31 @@ app.listen(PORT, async () => {
     console.log('- Soulseek (repli): désactivé dans .env');
   }
 
+  if (CONFIG.youtube.enabled) {
+    CONFIG.youtube.version = await detectYtDlp();
+    if (CONFIG.youtube.version) {
+      console.log(`- YouTube Music (dernier repli): yt-dlp ${CONFIG.youtube.version}`);
+      console.log(`  Moteur JavaScript: ${CONFIG.youtube.jsRuntime || 'réglage de yt-dlp'}`);
+    } else {
+      console.log('- YouTube Music (dernier repli): DÉSACTIVÉ, yt-dlp introuvable');
+      console.log(`  ⚠ Commande testée: ${CONFIG.youtube.ytdlpPath} --version`);
+      console.log('  ⚠ Indiquez son chemin via YTDLP_PATH dans le .env.');
+    }
+  } else {
+    console.log('- YouTube Music (dernier repli): désactivé (YOUTUBE_ENABLED=true pour l\'activer)');
+  }
+
   console.log('- Accès invité: liste d\'utilisateurs gérée depuis /admin');
+  const effets = [['Ajoutée par', 'addedBy'], ['annonce des ajouts', 'addToast'],
+    ['réactions', 'reactions'], ['message de veille', 'standby']]
+    .filter(([, cle]) => CONFIG.display[cle]).map(([nom]) => nom);
+  console.log(`- Écran de lecture: ${effets.length ? effets.join(', ') : 'effets optionnels désactivés'}`);
 });
 
 // Ne rien laisser traîner en quittant
 function cleanupOnExit() {
-  if (CONFIG.soulseek.enabled) {
-    console.log('\nNettoyage des téléchargements Soulseek...');
+  if (CONFIG.soulseek.enabled || CONFIG.youtube.enabled) {
+    console.log('\nNettoyage des téléchargements...');
     try { fs.rmSync(SOULSEEK_DIR, { recursive: true, force: true }); } catch (e) { /* rien à faire */ }
   }
   // Le démon lancé par le jukebox s'arrête avec lui ; celui qu'on a trouvé

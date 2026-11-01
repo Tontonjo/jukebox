@@ -1,5 +1,38 @@
 <!DOCTYPE html>
-<!-- Jukebox — ecran de lecture — Version 1.7.2 (2026-10-20)
+<!-- Jukebox — ecran de lecture — Version 1.12.0 (2026-10-31)
+     1.12.0 : Playlist : la chanson en cours est toujours en haut de la
+             liste, suivie d'autant de chansons a venir que la place le
+             permet (au lieu d'etre centree entre passe et futur). Un
+             espace vide en bas permet de garder la derniere en haut ; les
+             chansons passees restent accessibles en remontant.
+     1.11.0 : La barre de progression devient un spectre : une rangee de
+             barres verticales qui suivent la musique (basses a gauche,
+             aigus a droite). La partie deja lue prend la couleur de la
+             pochette et brille, le reste reste gris. En direct, toute la
+             rangee est coloree. Sans donnees audio, une houle lente ; en
+             pause, les barres s'abaissent. Le reflet de la 1.9.0 disparait.
+     1.10.0 : Le fond vivant devient visualiseur : sur chaque basse, la
+             pochette floue grossit legerement et un halo de sa couleur
+             dominante s'allume au centre de l'ecran, puis retombe.
+             Meme energie des basses que la barre de progression.
+     1.9.0 : Plus de rayons autour du disque : le visualiseur passe sur la
+             barre de progression. Pendant la lecture, un reflet lumineux
+             parcourt la partie remplie et sa lueur bat au rythme des
+             basses ; la barre prend la couleur dominante de la pochette
+             (ancienne couleur de la couronne). Au repos, l'animation
+             s'arrete ; rien ne bouge si le mouvement reduit est demande.
+     1.8.0 : Fond vivant : la pochette (ou le logo de la radio), tres floue
+             et agrandie, couvre tout l'ecran et derive lentement ; deux
+             calques se relaient au rythme du fondu audio. Changement de
+             morceau : l'ancien disque glisse et s'efface, le nouveau arrive
+             en fondu. Options du serveur (.env PLAYER_*) : « Ajoutee par »
+             en grand au demarrage d'une chanson, annonce de chaque ajout,
+             reactions des invites qui montent a l'ecran, message de veille
+             pendant la musique d'attente (QR code mis en avant).
+     1.7.4 : Plus de « Piste x/x » sous le morceau en cours : la ligne
+             d'etat reste vide pendant la lecture.
+     1.7.3 : Les pistes YouTube Music attendent leur telechargement,
+             comme celles de Soulseek.
      1.7.2 : Ecran large : la playlist garde sa largeur d'origine, seules
              ses polices grandissent (correction de la 1.7.0).
      1.7.1 : La couronne prend la couleur dominante de la pochette (ou du
@@ -85,7 +118,7 @@
       /* Largeur commune a la platine et a la barre de progression. Le
          reste de la colonne (textes, paroles, progression, QR, liens)
          occupe une hauteur fixe : on la retranche pour que rien ne deborde. */
-      --stack-w: clamp(200px, min(100%, calc(100vh - 760px)), 700px);
+      --stack-w: clamp(200px, min(100%, calc(100vh - 788px)), 700px);
       --neon-soft: rgba(0, 229, 255, 0.35);
       --bg1: #0b0b15;
       --bg2: #141428;
@@ -163,8 +196,7 @@
 
     /* ── Platine ──────────────────────────────────────────────
        Un seul canvas : disque (pochette imprimee sur toute la
-       surface, ou vinyle noir avec etiquette), couronne de barres
-       et bras de lecture. Dessine en JavaScript,
+       surface, ou vinyle noir avec etiquette) et bras de lecture. Dessine en JavaScript,
        voir PLATINE en fin de page. */
     #platine {
       width: var(--stack-w);
@@ -250,24 +282,29 @@
       width: var(--stack-w);
     }
 
+    /* Barre de progression en spectre, dessinee dans #spectre par la
+       boucle de la PLATINE. .progress-fill reste dans le DOM : sa largeur
+       (posee par updateProgress) donne la part deja lue, mais il est
+       invisible. */
     .progress-bar {
       width: 100%;
-      height: 8px;
-      background: rgba(255, 255, 255, 0.12);
-      border-radius: 3px;
+      height: 36px;
       cursor: pointer;
       margin-bottom: 10px;
       position: relative;
-      overflow: hidden;
+    }
+
+    #spectre {
+      display: block;
+      width: 100%;
+      height: 100%;
     }
 
     .progress-fill {
+      position: absolute;
       width: 0;
-      height: 100%;
-      background: linear-gradient(90deg, rgba(0, 229, 255, .55), var(--neon));
-      box-shadow: 0 0 12px rgba(0, 229, 255, .55);
-      border-radius: 3px;
-      transition: width 0.1s linear;
+      height: 0;
+      visibility: hidden;
     }
 
     .time-display {
@@ -420,6 +457,14 @@
 
     .playlist-item.played {
       opacity: 0.5;
+    }
+
+    /* Espace vide sous la file : garde la piste en cours en haut, meme
+       lorsqu'il ne reste que peu de pistes apres elle (hauteur en JS) */
+    .playlist-spacer {
+      flex: none;
+      height: 0;
+      pointer-events: none;
     }
 
     .playlist-item.current,
@@ -900,9 +945,222 @@
       color: #fff;
       text-decoration: underline;
     }
+
+    /* ── Fond vivant (1.8.0) ─────────────────────────────────────
+       Pochette floue en plein ecran, derriere tout le reste. Deux
+       calques se relaient ; la duree du fondu est posee en JS. */
+    :root { --teinte: 0, 229, 255; }
+
+    /* --niveau (energie des basses, 0 a 1) et --teinte-fond ("r, g, b")
+       sont poses a chaque image par la boucle de la PLATINE. */
+    .ambiance {
+      --niveau: 0;
+      --teinte-fond: 0, 229, 255;
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .ambiance-calque {
+      position: absolute;
+      inset: -18%;
+      background-size: cover;
+      background-position: center;
+      filter: blur(70px) saturate(1.5) brightness(0.55);
+      opacity: 0;
+      transition: opacity 2s ease;
+      animation: derive 50s ease-in-out infinite alternate;
+      /* "scale" s'ajoute au transform de la derive sans la remplacer */
+      scale: calc(1 + 0.06 * var(--niveau));
+      will-change: transform, opacity, scale;
+    }
+
+    /* Halo qui s'allume sur les basses, au-dessus de la pochette */
+    .ambiance::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      background: radial-gradient(ellipse at 50% 40%, rgba(var(--teinte-fond), 0.38), transparent 65%);
+      mix-blend-mode: screen;
+      opacity: var(--niveau);
+      will-change: opacity;
+    }
+
+    .ambiance-calque.visible { opacity: 1; }
+
+    /* Voile : les bords restent sombres, les textes lisibles */
+    .ambiance::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      background: radial-gradient(circle at center, rgba(11, 11, 21, 0.2), rgba(11, 11, 21, 0.78));
+    }
+
+    @keyframes derive {
+      0%   { transform: scale(1.05) rotate(0deg) translate(0, 0); }
+      50%  { transform: scale(1.2) rotate(4deg) translate(2%, -2%); }
+      100% { transform: scale(1.12) rotate(-3deg) translate(-2%, 2%); }
+    }
+
+    /* ── « Ajoutée par » (PLAYER_ADDED_BY) ───────────────────── */
+    .player-section { position: relative; }
+
+    .ajout-par {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 32%;
+      transform: translateY(-50%);
+      z-index: 6;
+      display: none;
+      justify-content: center;
+      pointer-events: none;
+    }
+
+    .ajout-par.visible { display: flex; }
+
+    .ajout-par-carte {
+      text-align: center;
+      max-width: 92%;
+      padding: 18px 44px 24px;
+      border-radius: 28px;
+      background: rgba(11, 11, 21, 0.84);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(var(--teinte), 0.35);
+      box-shadow: 0 0 70px rgba(var(--teinte), 0.35);
+      animation: ajoutEntree 0.9s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+    }
+
+    .ajout-par.sortie .ajout-par-carte { animation: ajoutSortie 0.7s ease forwards; }
+
+    .ajout-par-label {
+      font-size: 18px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      color: var(--muted);
+      animation: ajoutLabel 0.7s ease 0.15s both;
+    }
+
+    .ajout-par-nom {
+      font-size: clamp(44px, 6vw, 110px);
+      font-weight: 800;
+      line-height: 1.1;
+      overflow-wrap: anywhere;
+      background: linear-gradient(90deg, #fff, rgb(var(--teinte)), #fff);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      animation: ajoutBrille 2.4s linear infinite;
+    }
+
+    @keyframes ajoutEntree {
+      0%   { opacity: 0; transform: translateY(30px) scale(0.6); }
+      60%  { opacity: 1; transform: translateY(0) scale(1.06); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
+    @keyframes ajoutSortie { to { opacity: 0; transform: translateY(-20px) scale(0.95); } }
+    @keyframes ajoutLabel { from { opacity: 0; letter-spacing: 14px; } to { opacity: 1; letter-spacing: 4px; } }
+    @keyframes ajoutBrille { to { background-position: 200% center; } }
+
+    /* ── Annonce des ajouts (PLAYER_ADD_TOAST) ───────────────── */
+    .toasts {
+      position: fixed;
+      top: 22px;
+      right: 22px;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+      max-width: 440px;
+      pointer-events: none;
+    }
+
+    .toast {
+      padding: 12px 18px;
+      border-radius: 14px;
+      background: rgba(11, 11, 21, 0.72);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(var(--teinte), 0.35);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+      font-size: 17px;
+      color: rgba(255, 255, 255, 0.85);
+      animation: toastEntree 0.5s cubic-bezier(0.2, 1.2, 0.4, 1) both;
+    }
+
+    .toast strong { color: #fff; }
+    .toast.sortie { animation: toastSortie 0.5s ease forwards; }
+
+    @keyframes toastEntree { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: none; } }
+    @keyframes toastSortie { to { opacity: 0; transform: translateX(40px); } }
+
+    /* ── Reactions des invites (PLAYER_REACTIONS) ────────────── */
+    .reactions {
+      position: fixed;
+      inset: 0;
+      z-index: 15;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .reaction {
+      position: absolute;
+      bottom: -90px;
+      line-height: 1;
+      animation-name: reactionMonte;
+      animation-timing-function: linear;
+      animation-fill-mode: forwards;
+      filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.45));
+      will-change: transform, opacity;
+    }
+
+    @keyframes reactionMonte {
+      0%   { opacity: 0; transform: translate(0, 0) scale(0.5); }
+      10%  { opacity: 1; transform: translate(calc(var(--derive) * 0.2), -10vh) scale(1.15); }
+      50%  { transform: translate(var(--derive), -52vh) scale(1); }
+      100% { opacity: 0; transform: translate(calc(var(--derive) * -0.4), -108vh) scale(0.85); }
+    }
+
+    /* ── Message de veille (PLAYER_STANDBY) ──────────────────── */
+    #status.veille {
+      display: inline-block;
+      font-size: 24px;
+      font-weight: 700;
+      color: #fff;
+      text-shadow: 0 0 18px rgba(var(--teinte), 0.8);
+      animation: veillePulse 2.4s ease-in-out infinite;
+    }
+
+    .join.appel { animation: appelQr 2.4s ease-in-out infinite; }
+
+    @keyframes veillePulse { 50% { opacity: 0.65; transform: scale(0.97); } }
+    @keyframes appelQr {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(var(--teinte), 0); }
+      50%      { box-shadow: 0 0 36px 6px rgba(var(--teinte), 0.55); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ambiance-calque { animation: none; transform: scale(1.12); }
+      #status.veille, .join.appel, .ajout-par-nom { animation: none; }
+    }
   </style>
 </head>
 <body>
+  <!-- Fond vivant : pochette floue en plein ecran (deux calques en relais) -->
+  <div class="ambiance" id="ambiance" aria-hidden="true">
+    <div class="ambiance-calque" id="ambianceA"></div>
+    <div class="ambiance-calque" id="ambianceB"></div>
+  </div>
+  <!-- Effets optionnels du .env (PLAYER_ADD_TOAST, PLAYER_REACTIONS) -->
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <div class="reactions" id="reactions" aria-hidden="true"></div>
+
   <!-- Cet ecran ne pilote rien : il affiche et il joue. Lecture, pause et
        changement de piste se commandent depuis /admin. -->
   <div class="sound-unlock" id="soundUnlock">
@@ -919,6 +1177,13 @@
   <div class="container">
     <!-- Droite: Lecteur -->
     <div class="section player-section">
+      <!-- « Ajoutée par » (PLAYER_ADDED_BY) -->
+      <div class="ajout-par" id="ajoutPar" aria-live="polite">
+        <div class="ajout-par-carte">
+          <div class="ajout-par-label">Ajoutée par</div>
+          <div class="ajout-par-nom" id="ajoutParNom"></div>
+        </div>
+      </div>
       <canvas id="platine" role="img" aria-label="Pochette sur une platine vinyle"></canvas>
 
       <div class="source-badge" id="sourceBadge"></div>
@@ -936,6 +1201,7 @@
 
       <div class="progress-container">
         <div class="progress-bar" id="progressBar">
+          <canvas id="spectre" aria-hidden="true"></canvas>
           <div class="progress-fill" id="progressFill"></div>
         </div>
         <div class="time-display">
@@ -980,9 +1246,9 @@
     let currentTrack = null;
 
     // ---- Lecture : un seul élément <audio>, alimenté par /api/stream ----
-    // Une seule sortie audio : Navidrome et Soulseek servent tous deux
+    // Une seule sortie audio : Navidrome, Soulseek et YouTube Music servent
     // un fichier via /api/stream/:source/:id
-    let awaitingDownload = false;    // piste Soulseek pas encore téléchargée
+    let awaitingDownload = false;    // piste Soulseek / YouTube pas encore téléchargée
 
     // ---- Fondu entre les chansons ----
     // Durée décidée par le serveur (FADE_SECONDS, modifiable depuis /admin) :
@@ -992,6 +1258,10 @@
     let fadeIn = null;           // { debut, duree } quand un fondu d'entrée court
     let fadeOutDemande = false;  // la piste suivante n'est demandée qu'une fois
     let playbackState = {};
+
+    // ---- Effets optionnels (.env PLAYER_*, lus dans /api/config) ----
+    // addedBy, addToast, reactions, standby, standbyText
+    let affichage = {};
 
     // ---- Musique d'attente ----
     // Quand plus aucune chanson d'invité n'attend son tour, le serveur
@@ -1171,7 +1441,7 @@
               <span class="item-added">Ajouté par: ${track.addedBy || 'Admin'}</span>
             </div>
           </div>
-        `).join('');
+        `).join('') + '<div class="playlist-spacer" aria-hidden="true"></div>';
 
         els.playlist.scrollTop = keepScroll;   // le re-rendu ne doit pas tout remonter
       }
@@ -1182,7 +1452,7 @@
       scrollPlaylistToCurrent(trackChanged);
 
       // La mise en page se stabilise juste apres (polices, pochette) : on
-      // repasse une fois pour un centrage exact. Sans effet si c'est deja bon.
+      // repasse une fois pour un placement exact. Sans effet si c'est deja bon.
       requestAnimationFrame(() => scrollPlaylistToCurrent(trackChanged));
     }
 
@@ -1194,9 +1464,22 @@
       // Quelqu'un consulte la liste : on le laisse tranquille un moment
       if (!force && Date.now() - lastManualScrollAt < AUTOSCROLL_PAUSE_MS) return;
 
+      // La piste en cours se cale en haut, les suivantes remplissent le reste.
+      // Vers la fin de la file, il n'y a plus assez de pistes pour remplir la
+      // hauteur : l'espace vide du bas complete, sinon le defilement serait
+      // bloque et des pistes passees remonteraient au-dessus d'elle.
+      const spacer = box.querySelector('.playlist-spacer');
+      const items = box.querySelectorAll('.playlist-item');
+      if (spacer && items.length) {
+        const lastRect = items[items.length - 1].getBoundingClientRect();
+        const gap = parseFloat(getComputedStyle(box).rowGap) || 0;
+        const reste = lastRect.bottom - item.getBoundingClientRect().top;
+        spacer.style.height = Math.max(0, box.clientHeight - reste - gap) + 'px';
+      }
+
       const boxRect = box.getBoundingClientRect();
       const itemRect = item.getBoundingClientRect();
-      const delta = (itemRect.top - boxRect.top) - (box.clientHeight - itemRect.height) / 2;
+      const delta = itemRect.top - boxRect.top;
 
       const maxTop = Math.max(0, box.scrollHeight - box.clientHeight);
       const top = Math.min(Math.max(0, box.scrollTop + delta), maxTop);
@@ -1260,6 +1543,10 @@
             currentTrack.lyricsState = track.lyricsState;
             renderTrackLyrics(track);
           }
+
+          // « Ajoutée par » au vrai demarrage : lecture lancee, fichier pret
+          const pret = !['soulseek', 'youtube'].includes(track.source) || track.downloadStatus === 'ready';
+          if (pret) annoncerAjoutPar(track, data);
         } else {
           if (enAttente) {           // l'attente vient d'être coupée
             enAttente = false;
@@ -1271,6 +1558,8 @@
           els.status.textContent = 'En attente de chansons...';
           if (!els.audio.paused) els.audio.pause();
         }
+
+        majVeille(Boolean(attente.playing));
 
         // L'ecran obeit a l'admin : lecture, pause et position viennent d'ici
         syncWithServer(data);
@@ -1401,7 +1690,7 @@
     // - webradio avec logo : sur l'etiquette d'un vinyle noir
     // - sinon : vinyle noir, logo de branding (public/logo.png) au centre
     // Une image qui ne charge pas fait retomber sur le cas suivant.
-    // teinte : couleur de la couronne, "r, g, b" tiree de l'image, ou null (cyan)
+    // teinte : couleur du spectre de progression, "r, g, b" tiree de l'image, ou null (cyan)
     const habillage = { pochette: null, etiquette: null, teinte: null };
     let logoMarque = null;          // image de public/logo.png, si elle existe
     let pochetteDemandee = null;    // ignore les reponses d'une piste quittee
@@ -1423,25 +1712,48 @@
       });
     }
 
+    let pochetteVideTimer = null;
+
+    function poserHabillage(pochette, etiquette, teinte) {
+      habillage.pochette = pochette;
+      habillage.etiquette = etiquette;
+      habillage.teinte = teinte;
+      // Meme couleur pour les effets en CSS (annonces, veille)
+      document.documentElement.style.setProperty('--teinte', teinte || '0, 229, 255');
+    }
+
     async function afficherPochette(track) {
       pochetteDemandee = track;
-      // Vinyle nu tout de suite : l'ancienne pochette ne doit pas
-      // accompagner le nouveau titre le temps du chargement.
-      habillage.pochette = null;
-      habillage.etiquette = null;
-      habillage.teinte = null;
+      // L'ancienne pochette reste le temps du chargement, une seconde au
+      // plus : la platine enchaine alors directement de l'une a l'autre,
+      // sans montrer de vinyle nu entre les deux.
+      clearTimeout(pochetteVideTimer);
+      pochetteVideTimer = setTimeout(() => {
+        if (pochetteDemandee === track) poserHabillage(null, null, null);
+      }, 1000);
 
       const src = track.live ? logoRadio(track) : track.coverArt;
-      if (!src) return;
+      if (!src) {
+        clearTimeout(pochetteVideTimer);
+        poserHabillage(null, null, null);
+        changerAmbiance(null);
+        return;
+      }
 
       // Serveur sans en-tetes CORS : la requete CORS echoue, on recharge
       // l'image normalement. Elle s'affiche, mais sa couleur reste illisible.
       const img = (await chargerImage(src, true)) || (await chargerImage(src, false));
-      if (!img || pochetteDemandee !== track) return;
+      if (pochetteDemandee !== track) return;
+      clearTimeout(pochetteVideTimer);
 
-      if (track.live) habillage.etiquette = img;
-      else habillage.pochette = img;
-      habillage.teinte = teinteDominante(img);
+      if (!img) {
+        poserHabillage(null, null, null);
+        changerAmbiance(null);
+        return;
+      }
+
+      poserHabillage(track.live ? null : img, track.live ? img : null, teinteDominante(img));
+      changerAmbiance(img.src);
     }
 
     // Couleur dominante d'une image, ravivee pour briller sur fond sombre.
@@ -1582,8 +1894,8 @@
         currentTrack = track;
         afficherPiste(track);
 
-        // Une piste Soulseek doit d'abord finir de se télécharger
-        if (track.source === 'soulseek' && track.downloadStatus !== 'ready') {
+        // Une piste Soulseek ou YouTube Music doit d'abord finir de se télécharger
+        if ((track.source === 'soulseek' || track.source === 'youtube') && track.downloadStatus !== 'ready') {
           awaitingDownload = true;
           resetAudio();
           // Le lecteur n'affiche pas la provenance des pistes
@@ -1617,7 +1929,8 @@
           enginePlay();
         }
 
-        els.status.textContent = `Piste ${index + 1}/${data.playlist.length}`;
+        // Lecture normale : rien a signaler (efface « Chargement en cours... »)
+        els.status.textContent = '';
       } catch (error) {
         console.error('Erreur lors du chargement de la piste:', error);
       }
@@ -2071,6 +2384,8 @@
           lien.textContent = config.guestUrl.replace(/^https?:\/\//, '');
           lien.href = config.guestUrl;   // le texte est raccourci, pas le lien
         }
+        affichage = (config && config.display) || {};
+        if (affichage.addToast || affichage.reactions) lireFil();
       } catch (error) {
         console.warn('Adresse invité indisponible');
       }
@@ -2094,16 +2409,140 @@
     loadPlaylist();
     setInterval(loadPlaylist, 2000);
 
-    /* ── PLATINE : disque, visualiseur et bras dans un seul canvas ────
+    // ============= FOND VIVANT =============
+    // La pochette en cours, tres floue et agrandie, couvre tout l'ecran et
+    // derive lentement (CSS). Deux calques se relaient : la nouvelle image
+    // apparait pendant que l'ancienne s'efface, au rythme du fondu audio.
+    const ambiance = {
+      calques: [document.getElementById('ambianceA'), document.getElementById('ambianceB')],
+      actif: 0,
+      src: null
+    };
+
+    function changerAmbiance(src) {
+      if (src === ambiance.src) return;
+      ambiance.src = src;
+
+      const duree = Math.max(1.2, fadeSeconds || 0) + 's';
+      ambiance.calques.forEach(calque => { calque.style.transitionDuration = duree; });
+
+      ambiance.calques[ambiance.actif].classList.remove('visible');
+      if (!src) return;   // pas d'image : le fond sombre habituel revient
+
+      const entrant = ambiance.calques[1 - ambiance.actif];
+      entrant.style.backgroundImage = `url(${JSON.stringify(src)})`;
+      entrant.classList.add('visible');
+      ambiance.actif = 1 - ambiance.actif;
+    }
+
+    // ============= « AJOUTÉE PAR » (PLAYER_ADDED_BY) =============
+    // Au demarrage d'une chanson d'invite, son nom en grand pendant 5 s.
+    // Rien pour l'admin, ni quand l'ecran reprend un morceau deja entame.
+    let annonceTimer = null;
+    let derniereAnnonce = '';
+
+    function annoncerAjoutPar(track, data) {
+      if (!affichage.addedBy || !track.addedBy || track.addedBy === 'Admin') return;
+      if (!data.isPlaying || data.playbackTime > 5) return;
+
+      const cle = `${cleSource(track)}:${track.addedAt || ''}`;
+      if (cle === derniereAnnonce) return;
+      derniereAnnonce = cle;
+
+      const bloc = document.getElementById('ajoutPar');
+      document.getElementById('ajoutParNom').textContent = track.addedBy;
+      // Centree sur le disque, la ou le regard se trouve deja
+      const platine = document.getElementById('platine');
+      if (platine) bloc.style.top = `${platine.offsetTop + platine.offsetHeight / 2}px`;
+      bloc.classList.remove('visible', 'sortie');
+      void bloc.offsetWidth;   // relance l'animation d'entree
+      bloc.classList.add('visible');
+
+      clearTimeout(annonceTimer);
+      annonceTimer = setTimeout(() => bloc.classList.add('sortie'), 5000);
+    }
+
+    // ============= FIL D'EVENEMENTS (ajouts, reactions) =============
+    let filSeq = null;   // null : premier appel, on part de maintenant
+
+    async function lireFil() {
+      try {
+        const url = filSeq === null ? `${API_BASE}/feed` : `${API_BASE}/feed?since=${filSeq}`;
+        const data = await (await fetch(url)).json();
+        if (filSeq !== null) {
+          for (const evenement of data.events || []) {
+            if (evenement.type === 'add' && affichage.addToast) annoncerAjout(evenement);
+            if (evenement.type === 'reaction' && affichage.reactions) lancerReaction(evenement.emoji);
+          }
+        }
+        filSeq = data.seq;
+      } catch (error) {
+        // Serveur injoignable un instant : on retente au prochain tour
+      }
+      setTimeout(lireFil, 1000);
+    }
+
+    // « 🎵 Marc vient d'ajouter Get Lucky », trois annonces au plus a la fois
+    function annoncerAjout(evenement) {
+      const zone = document.getElementById('toasts');
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+
+      const nom = document.createElement('strong');
+      nom.textContent = evenement.name;
+      const titre = document.createElement('strong');
+      titre.textContent = evenement.title;
+      toast.append('🎵 ', nom, ' vient d\'ajouter ', titre);
+
+      zone.appendChild(toast);
+      while (zone.children.length > 3) zone.firstElementChild.remove();
+
+      setTimeout(() => toast.classList.add('sortie'), 6000);
+      setTimeout(() => toast.remove(), 6600);
+    }
+
+    // Un emoji monte depuis le bas de l'ecran en ondulant
+    const REACTIONS_MAX = 40;   // emojis a l'ecran en meme temps
+
+    function lancerReaction(emoji) {
+      const zone = document.getElementById('reactions');
+      if (zone.childElementCount >= REACTIONS_MAX) return;
+
+      const bulle = document.createElement('span');
+      bulle.className = 'reaction';
+      bulle.textContent = emoji;
+      // Depart sous la colonne du lecteur, a droite de la playlist
+      bulle.style.left = `${36 + Math.random() * 58}%`;
+      bulle.style.fontSize = `${42 + Math.random() * 34}px`;
+      bulle.style.setProperty('--derive', `${Math.round(Math.random() * 160 - 80)}px`);
+      bulle.style.animationDuration = `${(4 + Math.random() * 2.5).toFixed(2)}s`;
+      bulle.addEventListener('animationend', () => bulle.remove());
+      zone.appendChild(bulle);
+    }
+
+    // ============= VEILLE (PLAYER_STANDBY) =============
+    // Pendant la musique d'attente : message en evidence et QR code qui pulse
+    function majVeille(attenteEnCours) {
+      const active = Boolean(affichage.standby && attenteEnCours);
+      const etaitActive = els.status.classList.contains('veille');
+      els.status.classList.toggle('veille', active);
+      const invitation = document.querySelector('.join');
+      if (invitation) invitation.classList.toggle('appel', active);
+      if (active) els.status.textContent = affichage.standbyText || '';
+      else if (etaitActive) els.status.textContent = '';
+    }
+
+    /* ── PLATINE : disque et bras dans un seul canvas, visualiseur ─────
        - Pochette de la chanson imprimee sur tout le disque (picture
          disc). Sans pochette : vinyle noir, etiquette = logo de la
          webradio ou logo de branding.
-       - Une couronne de barres rayonne autour du disque : c'est le
-         visualiseur. Le disque lui-meme reste net, sans sillons.
        - Le disque tourne lentement (un tour en TOUR_S) quand le son sort,
          demarre et s'arrete en douceur ; en pause, le bras se releve.
-       Sans donnees audio (avant le premier geste, ou en pause), une
-       animation lente remplace le spectre.
+       - Visualiseur : la barre de progression, dessinee en spectre dans
+         #spectre (voir SPECTRE plus bas), et le fond vivant, qui recoit
+         l'energie des basses (--niveau) et la couleur (--teinte-fond).
+       Sans donnees audio (avant le premier geste), une houle lente anime
+       le spectre pendant la lecture ; le fond ne bat pas.
        L'AnalyserNode n'est branche QUE lors d'un geste utilisateur :
        creer le graphe audio avec un AudioContext suspendu couperait
        le son sur les navigateurs qui bloquent l'autoplay.
@@ -2115,15 +2554,14 @@
       const audio = els.audio;
       const mouvementReduit = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-      const RAYONS = 72;       // barres de la couronne
-      const TOUR_S = 6;        // duree d'un tour, en secondes (1.8 = vrai 33 tours)
+      const TOUR_S = 10;        // duree d'un tour, en secondes (1.8 = vrai 33 tours)
       const NEON = '0, 229, 255';
       const CYAN = [0, 229, 255];
       const couleur = CYAN.slice();   // couleur affichee, glisse vers la cible
       let teinteCible = null;
       let rgbCible = CYAN;
 
-      // Fondu d'environ une seconde entre deux couleurs de couronne
+      // Fondu d'environ une seconde entre deux couleurs de barre
       function suivreTeinte(dt) {
         if (habillage.teinte !== teinteCible) {
           teinteCible = habillage.teinte;
@@ -2144,10 +2582,52 @@
       let angle = 0;           // rotation du disque
       let vitesse = 0;         // 0 a 1 : demarrage et arret progressifs
       let bras = 0;            // 0 = releve, 1 = pose sur le disque
-      let amplitude = 0.35;
-      let phase = 0;
+      let niveau = 0;          // energie des basses lissee, 0 a 1
       let dernier = performance.now();
-      const rayons = new Array(RAYONS).fill(0);
+      const spectre = document.getElementById('spectre');
+      const sctx = spectre.getContext('2d');
+      const fond = document.getElementById('ambiance');
+
+      // ---- Changement de pochette ----
+      // L'ancien disque glisse vers la gauche en s'effacant, le nouveau
+      // arrive en fondu, sur la duree du fondu audio (0,8 s au moins).
+      const cleHabillage = h => [h.pochette && h.pochette.src, h.etiquette && h.etiquette.src].join('|');
+      let vu = { pochette: habillage.pochette, etiquette: habillage.etiquette };
+      let vuCle = cleHabillage(habillage);
+      let transition = null;   // { ancien, debut, duree }
+
+      function suivreHabillage(maintenant) {
+        const cle = cleHabillage(habillage);
+        if (cle === vuCle) return;
+        transition = { ancien: vu, debut: maintenant, duree: Math.max(800, (fadeSeconds || 0) * 1000) };
+        vu = { pochette: habillage.pochette, etiquette: habillage.etiquette };
+        vuCle = cle;
+      }
+
+      function dessinerDisques(R, maintenant) {
+        suivreHabillage(maintenant);
+        if (!transition) { dessinerDisque(R, vu, angle); return; }
+
+        const p = Math.min(1, (maintenant - transition.debut) / transition.duree);
+        const e = 1 - Math.pow(1 - p, 3);              // depart vif, arrivee douce
+        const glisse = mouvementReduit.matches ? 0 : 1;
+
+        ctx.save();
+        ctx.globalAlpha = 1 - e;
+        ctx.translate(-taille * 0.3 * e * glisse, 0);
+        ctx.scale(1 - 0.12 * e * glisse, 1 - 0.12 * e * glisse);
+        dessinerDisque(R, transition.ancien, angle);
+        ctx.restore();
+
+        ctx.save();
+        ctx.globalAlpha = e;
+        const s = 1 - 0.06 * (1 - e) * glisse;
+        ctx.scale(s, s);
+        dessinerDisque(R, vu, angle);
+        ctx.restore();
+
+        if (p >= 1) transition = null;
+      }
 
       // Geometrie, en fraction du cote du canvas
       const RAYON_DISQUE = 0.4;
@@ -2197,9 +2677,19 @@
         document.addEventListener(evt, brancherAnalyser, { passive: true });
       });
 
+      // Energie des basses (environ 0 a 1 kHz avec fftSize 256 a 44,1 kHz),
+      // relevee au-dela d'un plancher pour ignorer le bruit des silences.
+      function basses() {
+        analyser.getByteFrequencyData(donnees);
+        let somme = 0;
+        for (let i = 1; i <= 6; i++) somme += donnees[i];
+        return Math.max(0, (somme / 6 / 255 - 0.35) / 0.65);
+      }
+
       // Spectre en bandes logarithmiques : en lineaire, les basses, qui
-      // portent l'essentiel de l'energie musicale, tiendraient dans un
-      // seul anneau. Le plancher evite d'amplifier le bruit des silences.
+      // portent l'essentiel de l'energie musicale, tiendraient dans une
+      // seule barre. Le plancher evite d'amplifier le bruit des silences.
+      // A appeler apres basses(), qui a deja lu les donnees.
       function bandes(n) {
         const utiles = Math.floor(donnees.length * 0.8);
         let max = 96;
@@ -2216,9 +2706,82 @@
         return sortie;
       }
 
-      function lisser(niveaux, cibles, facteur) {
-        for (let i = 0; i < niveaux.length; i++) {
-          niveaux[i] += (cibles[i] - niveaux[i]) * facteur;
+      // ---- SPECTRE : la barre de progression ----
+      const PAS_BARRE = 6;       // largeur d'une barre + espace, en px CSS
+      const LARGEUR_BARRE = 4;
+      let sLargeur = 0;
+      let sHauteur = 0;
+      let niveaux = [];          // hauteur affichee de chaque barre, 0 a 1
+      let houle = 0;
+
+      function dimensionnerSpectre() {
+        const d = window.devicePixelRatio || 1;
+        const w = spectre.clientWidth;
+        const h = spectre.clientHeight;
+        if (!w || !h || (w === sLargeur && h === sHauteur && spectre.width === Math.round(w * d))) return;
+        sLargeur = w;
+        sHauteur = h;
+        spectre.width = Math.round(w * d);
+        spectre.height = Math.round(h * d);
+        sctx.setTransform(d, 0, 0, d, 0, 0);
+        const n = Math.max(8, Math.floor((w + PAS_BARRE - LARGEUR_BARRE) / PAS_BARRE));
+        niveaux = Array.from({ length: n }, (_, i) => niveaux[i] || 0);
+      }
+
+      // part : fraction deja lue (0 a 1) ; tout colore pour un direct
+      function dessinerSpectre(dt, enLecture, teinte, part) {
+        dimensionnerSpectre();
+        if (!sLargeur) return;
+        const n = niveaux.length;
+
+        // Hauteurs cibles : spectre reel, houle lente, ou repos bas
+        let cibles;
+        if (analyser && enLecture && !mouvementReduit.matches) {
+          cibles = bandes(n);
+        } else if (enLecture && !mouvementReduit.matches) {
+          houle += dt * 2;
+          cibles = niveaux.map((_, i) =>
+            0.25 + 0.2 * Math.sin(houle + i * 0.35) + 0.1 * Math.sin(houle * 0.7 + i * 0.13));
+        } else {
+          cibles = niveaux.map(() => 0.12);
+        }
+        for (let i = 0; i < n; i++) {
+          const c = Math.min(1, Math.max(0, cibles[i]));
+          niveaux[i] += (c - niveaux[i]) * (c > niveaux[i] ? 0.55 : 0.15);
+        }
+
+        // Centrage de la rangee dans la largeur disponible
+        const total = n * PAS_BARRE - (PAS_BARRE - LARGEUR_BARRE);
+        const x0 = (sLargeur - total) / 2;
+        const limite = part * sLargeur;
+        const hMin = 3;
+
+        sctx.clearRect(0, 0, sLargeur, sHauteur);
+        sctx.lineCap = 'round';
+        sctx.lineWidth = LARGEUR_BARRE;
+
+        // Deux passes : barres non lues (grises), puis lues (couleur + lueur)
+        const passes = [
+          { lue: false, style: 'rgba(255, 255, 255, 0.16)', lueur: 0 },
+          { lue: true, style: `rgb(${teinte})`, lueur: 10 }
+        ];
+        for (const passe of passes) {
+          sctx.save();
+          sctx.strokeStyle = passe.style;
+          sctx.shadowColor = `rgba(${teinte}, 0.7)`;
+          sctx.shadowBlur = passe.lueur;
+          sctx.beginPath();
+          for (let i = 0; i < n; i++) {
+            const x = x0 + i * PAS_BARRE + LARGEUR_BARRE / 2;
+            if ((x <= limite) !== passe.lue) continue;
+            // Barres centrees verticalement, marge pour les bouts arrondis
+            const h = hMin + niveaux[i] * (sHauteur - LARGEUR_BARRE - hMin);
+            const y = sHauteur / 2;
+            sctx.moveTo(x, y - h / 2);
+            sctx.lineTo(x, y + h / 2);
+          }
+          sctx.stroke();
+          sctx.restore();
         }
       }
 
@@ -2237,32 +2800,8 @@
         ctx.drawImage(img, (-w * echelle) / 2, (-h * echelle) / 2, w * echelle, h * echelle);
       }
 
-      function dessinerCouronne(R, teinte) {
-        const T = taille;
-        const base = R + T * 0.022;
-
-        ctx.save();
-        ctx.lineCap = 'round';
-        ctx.lineWidth = Math.max(2, T * 0.009);
-        ctx.strokeStyle = `rgba(${teinte}, 0.9)`;
-        ctx.shadowColor = `rgba(${teinte}, 0.55)`;
-        ctx.shadowBlur = T * 0.02;
-        ctx.globalAlpha = 0.35 + 0.65 * amplitude;
-
-        ctx.beginPath();
-        for (let i = 0; i < RAYONS; i++) {
-          const a = (i / RAYONS) * Math.PI * 2 - Math.PI / 2;
-          const h = T * 0.01 + rayons[i] * T * 0.07 * amplitude;
-          const cos = Math.cos(a);
-          const sin = Math.sin(a);
-          ctx.moveTo(cos * base, sin * base);
-          ctx.lineTo(cos * (base + h), sin * (base + h));
-        }
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      function dessinerDisque(R) {
+      // h : { pochette, etiquette } a imprimer ; a : angle de rotation
+      function dessinerDisque(R, h, a) {
         const T = taille;
 
         // Ombre portee du disque sur la section
@@ -2279,19 +2818,19 @@
         ctx.save();
         cercle(R);
         ctx.clip();
-        ctx.rotate(angle);
+        ctx.rotate(a);
 
-        if (habillage.pochette) {
-          poserImage(habillage.pochette, R, true);
+        if (h.pochette) {
+          poserImage(h.pochette, R, true);
         }
 
-        if (!habillage.pochette) {
+        if (!h.pochette) {
           const r = R * RAYON_ETIQUETTE;
           ctx.fillStyle = '#eafcff';
           cercle(r);
           ctx.fill();
 
-          const logo = habillage.etiquette || logoMarque;
+          const logo = h.etiquette || logoMarque;
           if (logo) {
             ctx.save();
             cercle(r);
@@ -2394,33 +2933,29 @@
         dernier = maintenant;
 
         const enLecture = !audio.paused && !audio.ended && audio.readyState > 2;
-        amplitude += ((enLecture ? 1 : 0.35) - amplitude) * 0.05;
         vitesse += ((enLecture && !mouvementReduit.matches ? 1 : 0) - vitesse) * Math.min(1, dt * 3);
         angle = (angle + (vitesse * dt * Math.PI * 2) / TOUR_S) % (Math.PI * 2);
         bras += ((enLecture ? 1 : 0) - bras) * Math.min(1, dt * 2.5);
 
-        // Niveaux cibles : spectre reel, ou houle lente au repos
-        let cRayons;
-        if (analyser && enLecture) {
-          analyser.getByteFrequencyData(donnees);
-          // Couronne symetrique : basses en haut, aigus en bas, des deux
-          // cotes, sans rupture entre la derniere barre et la premiere.
-          const moitie = bandes(RAYONS / 2);
-          cRayons = Array.from({ length: RAYONS }, (_, i) =>
-            moitie[i < RAYONS / 2 ? i : RAYONS - 1 - i]);
-        } else {
-          phase += dt * 1.6;
-          cRayons = rayons.map((_, i) =>
-            (Math.sin(phase + i * 0.26) * 0.65 + Math.sin(phase * 0.6 + i * 0.11) * 0.35 + 1) / 2);
+        // Fond : la lueur monte vite et retombe lentement
+        const cible = analyser && enLecture && !mouvementReduit.matches ? basses() : 0;
+        niveau += (cible - niveau) * (cible > niveau ? 0.5 : 0.12);
+        const n = niveau.toFixed(3);
+        const teinte = suivreTeinte(dt);
+        const part = currentTrack && currentTrack.live
+          ? 1
+          : Math.min(1, (parseFloat(els.progressFill.style.width) || 0) / 100);
+        dessinerSpectre(dt, enLecture, teinte, part);
+        if (fond) {
+          fond.style.setProperty('--niveau', n);
+          fond.style.setProperty('--teinte-fond', teinte);
         }
-        lisser(rayons, cRayons, enLecture ? 0.35 : 0.08);
 
         const R = taille * RAYON_DISQUE;
         ctx.clearRect(0, 0, taille, taille);
         ctx.save();
         ctx.translate(taille / 2, taille / 2);
-        dessinerCouronne(R, suivreTeinte(dt));
-        dessinerDisque(R);
+        dessinerDisques(R, maintenant);
         ctx.restore();
         dessinerBras();
       }

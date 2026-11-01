@@ -1,6 +1,6 @@
 # 🎵 Jukebox — déploiement et dépannage
 
-> **Jukebox 1.2.0** · doc rév. 2 — 12 septembre 2026
+> **Jukebox 1.14.0** · doc rév. 5 — 1er novembre 2026
 > Prérequis : Node.js ≥ 18, Nginx, en option Navidrome et `sockseek` (à installer
 > séparément). Démarrage express : [QUICK_START.md](QUICK_START.md) · HTTPS :
 > [SSL.md](SSL.md) · toutes les variables : [`.env.example`](.env.example)
@@ -91,10 +91,15 @@ tout disparaît au redémarrage. Ce sont des codes de soirée, pas des mots de p
 personnels.
 
 **Quotas** — `MAX_SONGS_PER_USER` (3 par défaut, viser 3–5 en soirée),
-`COOLDOWN_MINUTES` (5 par défaut, 2–10 selon la taille) et `QUOTA_WINDOW_MINUTES`
-se modifient en direct dans /admin (encadré « Quotas généraux »). Avec `3` et `60`,
-chacun pose 3 chansons par heure, chaque chanson libérant sa place 60 min après
-son ajout. La modification est immédiate mais en mémoire : après redémarrage, le
+`COOLDOWN_MINUTES` (5 par défaut, 2–10 selon la taille) et `SHORT_QUEUE_SONGS`
+(2 par défaut) se modifient en direct dans /admin (encadré « Quotas généraux »).
+Le quota compte les chansons en attente : avec `3`, chacun a au plus 3 chansons
+dans la file, et une place se libère dès que l'une d'elles passe. La file alterne
+entre les invités (ordre par tours). Quand il reste moins de `SHORT_QUEUE_SONGS`
+chansons à venir, quota et cooldown sont ignorés. `MAX_SONG_MINUTES` (8 par
+défaut, 0 = sans limite) refuse les chansons d'invités plus longues, aussi
+réglable dans /admin. `PRIORITY_FIRST_SONGS` (1 par défaut, `.env` seulement) :
+la première chanson d'un invité passe en tête de son tour. La modification est immédiate mais en mémoire : après redémarrage, le
 `.env` reprend la main.
 
 **Doublons** — refusés (409) sans entamer le quota ; les résultats portent

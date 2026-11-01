@@ -1,6 +1,6 @@
 # 🚀 Jukebox — démarrage rapide
 
-> **Jukebox 1.2.0** · doc rév. 2 — 12 septembre 2026
+> **Jukebox 1.13.0** · doc rév. 4 — 1er novembre 2026
 > Node.js ≥ 18 requis. Vue d'ensemble : [README.md](README.md) · production :
 > [DEPLOYMENT.md](DEPLOYMENT.md)
 
@@ -63,9 +63,10 @@ recherche ni ajout.
 ## Réglages courants
 
 ```env
-MAX_SONGS_PER_USER=3     # 1 (strict) à 10 (permissif)
-QUOTA_WINDOW_MINUTES=60  # fenêtre glissante ; 60 = "3 chansons/heure", 0 = définitif
+MAX_SONGS_PER_USER=3     # chansons en attente par invité, 1 (strict) à 10 (permissif)
+SHORT_QUEUE_SONGS=2      # sous N chansons à venir : ajout libre ; 0 = désactivé
 COOLDOWN_MINUTES=5       # délai entre ajouts, 0 à 60
+MAX_SONG_MINUTES=8       # durée max d'une chanson d'invité ; 0 = sans limite
 SESSION_DURATION=120     # minutes avant réinitialisation de session
 ```
 

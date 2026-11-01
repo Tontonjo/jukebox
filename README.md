@@ -1,16 +1,17 @@
 # 🎵 Jukebox
 
-> **Jukebox 1.5.0** · doc rév. 8 · 22 octobre 2026
+> **Jukebox 1.15.0** · doc rév. 18 · 1er novembre 2026
 
 Jukebox web pour les soirées : un **écran de lecture** branché aux enceintes, un
 **panneau admin** qui commande tout, une **page invité** où les personnes
 autorisées ajoutent leurs morceaux sous quota.
 
-<img width="750" height="375" alt="image" src="https://github.com/user-attachments/assets/17d80d3d-dadf-47f3-a842-3e5634607201" />
-
+<img width="550" height="500" alt="Capture d&#39;écran 2026-09-12 104623" src="https://github.com/user-attachments/assets/bf983656-8d96-43ec-a55f-3866007b4374" />
 
 La musique vient de **Navidrome** ; à défaut, repli sur **Soulseek** (via
-[sockseek](https://github.com/fiso64/sockseek), fichiers supprimés après lecture).
+[sockseek](https://github.com/fiso64/sockseek), fichiers supprimés après lecture),
+puis, en option, sur **YouTube Music** (via [yt-dlp](https://github.com/yt-dlp/yt-dlp)).
+Une source qui renvoie moins de 3 résultats fait aussi interroger la suivante.
 **Aucune base de données** : playlist, sessions et codes vivent en RAM et
 disparaissent au redémarrage — c'est voulu, l'outil est fait pour une soirée.
 
@@ -34,7 +35,12 @@ disparaissent au redémarrage — c'est voulu, l'outil est fait pour une soirée
 
 Fondu enchaîné réglable, reprise auto après coupure de flux (3 tentatives puis
 piste suivante), connexion invité par code unique sans nom à saisir, quota
-glissant, refus des doublons (casse, accents et parenthèses ignorés), crédit
+de chansons en attente (une place se libère dès qu'une chanson passe), file
+équitable par tours (chacun passe à son tour, quel que soit le nombre de
+chansons ajoutées ; la première chanson d'un invité passe en tête de son tour,
+un nouvel invité passe donc vite), rattrapage (un invité peut dépasser le max jusqu'au nombre
+de chansons en attente de l'invité le plus servi, plafond 2 × max), pas de délai d'ajout pour un invité qui n'a plus
+rien en attente, ajout libre quand la file est presque vide, refus des doublons (casse, accents et parenthèses ignorés), crédit
 remboursé si un téléchargement échoue. Quotas et fondu modifiables sans
 redémarrage.
 
@@ -70,11 +76,14 @@ Puis ouvrir `http://IP-DE-LA-MACHINE:3000` (lecteur), `/admin` et `/guest`.
 - **Soulseek** : le démon sockseek tourne dans le conteneur, démarré par le
   jukebox. Il suffit d'un compte Soulseek (`SOULSEEK_USER` / `SOULSEEK_PASS`).
   Sans compte, il suffit de retirer ces deux lignes.
+- **YouTube Music** (optionnel) : `-e YOUTUBE_ENABLED=true`. yt-dlp est inclus
+  dans l'image ; YouTube changeant souvent, reconstruire l'image de temps en
+  temps pour avoir un yt-dlp récent.
 - Sources automatiques : chacune s'active dès que ses identifiants sont
   fournis (`NAVIDROME_USER` + `NAVIDROME_PASS`, `SOULSEEK_USER` +
   `SOULSEEK_PASS`). Pour n'utiliser que l'une des deux, il suffit de ne pas
   renseigner l'autre. Les journaux l'indiquent au
-  démarrage (`Sources: Navidrome=true, Soulseek=true`). `NAVIDROME_ENABLED` ou
+  démarrage (`Sources: Navidrome=true, Soulseek=true, YouTube Music=false`). `NAVIDROME_ENABLED` ou
   `SOULSEEK_ENABLED` à `true` / `false` forcent le choix.
 - Le volume `jukebox-data` conserve la musique d'attente choisie et le cache
   Soulseek d'un redémarrage à l'autre.
@@ -124,7 +133,7 @@ docker compose up -d
 
 ## Installation
 
-Node.js ≥ 18. Facultatifs : Navidrome joignable, `sockseek` dans le `PATH`,
+Node.js ≥ 18 (≥ 20 pour YouTube Music). Facultatifs : Navidrome joignable, `sockseek` et `yt-dlp` dans le `PATH`,
 
 ```bash
 git clone https://github.com/Tontonjo/jukebox && cd jukebox
@@ -170,9 +179,11 @@ Tout dans `.env`, commenté en détail dans [`.env.example`](.env.example).
 | `NAVIDROME_ENABLED` | `false` *(Docker : automatique)* | Active la source principale. Sous Docker, vide = activée si `NAVIDROME_USER` et `NAVIDROME_PASS` sont renseignés |
 | `NAVIDROME_URL` | `http://localhost:4533` | URL du serveur |
 | `NAVIDROME_USER` / `NAVIDROME_PASS` | — | Identifiants |
-| `MAX_SONGS_PER_USER` 🔥 | `3` | Titres par invité |
+| `MAX_SONGS_PER_USER` 🔥 | `3` | Chansons en attente max par invité (place libérée quand la chanson passe). Rattrapage jusqu'à 2 × cette valeur si un autre invité en a plus en attente |
 | `COOLDOWN_MINUTES` 🔥 | `5` | Délai entre deux ajouts |
-| `QUOTA_WINDOW_MINUTES` 🔥 | `60` | Fenêtre glissante (`0` = quota définitif) |
+| `SHORT_QUEUE_SONGS` 🔥 | `2` | File courte : sous ce nombre de chansons à venir, quota et cooldown ignorés (`0` = désactivé) |
+| `PRIORITY_FIRST_SONGS` | `1` | Les N premières chansons de la soirée d'un invité passent en tête de leur tour (`0` = aucune priorité) |
+| `MAX_SONG_MINUTES` 🔥 | `8` | Durée max d'une chanson d'invité en minutes (`0` = sans limite). Résultats trop longs grisés ; durée inconnue vérifiée après téléchargement (retirée, crédit rendu). L'admin n'est pas limité |
 | `FADE_SECONDS` 🔥 | `3` | Fondu entre morceaux (`0` = enchaînement sec) |
 | `SESSION_DURATION` | `120` | Minutes avant remise à zéro des stats |
 | `LRCLIB_BASE` | `https://lrclib.net` | Base de l'API de paroles |
@@ -195,6 +206,45 @@ Stricte : `1` et `15`.
 | `SOULSEEK_MAX_DOWNLOADS` | `2` | Téléchargements simultanés |
 | `SOULSEEK_DELETE_AFTER_PLAY` | `true` | Supprime le fichier en fin de morceau |
 | `SOULSEEK_RATE_LIMIT` | `30` | Recherches max par fenêtre (Soulseek bannit 30 min au-delà d'environ 34 / 220 s) |
+
+### YouTube Music (dernier repli, optionnel)
+
+Interrogé quand la source précédente (Soulseek, ou Navidrome sans Soulseek)
+renvoie moins de 3 résultats. Recherche sur
+YouTube Music (repli : recherche YouTube via yt-dlp), téléchargement par yt-dlp.
+Les morceaux suivent le même circuit que Soulseek : dossier temporaire
+(`SOULSEEK_DOWNLOAD_DIR`), cache (`SOULSEEK_CACHE_DIR`), suppression après lecture.
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `YOUTUBE_ENABLED` | `false` | Active la source |
+| `YTDLP_PATH` | `yt-dlp` | Exécutable yt-dlp |
+| `YTDLP_JS_RUNTIME` | Node.js du jukebox | Moteur JavaScript passé à yt-dlp (Node.js 20+ requis) ; vide = choix de yt-dlp |
+| `YOUTUBE_FORMAT` | `bestaudio[ext=m4a]/bestaudio` | Format audio, sans conversion (pas de ffmpeg) |
+| `YOUTUBE_MAX_RESULTS` | `10` | Résultats proposés aux invités |
+| `YOUTUBE_SEARCH_TIMEOUT` | `15` | Délai max de la recherche (s) |
+| `YOUTUBE_DOWNLOAD_TIMEOUT` | `120` | Délai max d'un téléchargement (s) |
+
+### Écran de lecture
+
+Toujours actifs : fond flou tiré de la pochette (qui dérive lentement) et
+transition de pochette au changement de morceau.
+
+Pochettes : celle de Navidrome, celle intégrée au fichier (Soulseek) ou la
+vignette YouTube Music. Une piste sans pochette en cherche une sur Deezer
+(API publique, sans clé ni réglage) par artiste et titre, qui doivent
+correspondre ; l'image est gardée en local et suit le morceau dans le cache.
+Sans accès Internet, la piste reste simplement sans pochette.
+
+Effets optionnels, désactivés par défaut :
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `PLAYER_ADDED_BY` | `false` | « Ajoutée par Julie » en grand au démarrage d'une chanson d'invité |
+| `PLAYER_ADD_TOAST` | `false` | Annonce « 🎵 Marc vient d'ajouter Get Lucky » à chaque ajout |
+| `PLAYER_REACTIONS` | `false` | Barre 🔥 ❤️ 😂 sur la page invité, les emojis montent à l'écran |
+| `PLAYER_STANDBY` | `false` | Message mis en avant (et QR code qui pulse) pendant la musique d'attente |
+| `PLAYER_STANDBY_TEXT` | *(message par défaut)* | Texte de ce message |
 
 ### Musique d'attente
 
@@ -268,8 +318,8 @@ Nginx (TLS, gzip) → Node.js / Express :3000
                     playlist en mémoire · auth invités
                     recherche · streaming · QR · paroles
                          ↓                    ↓
-                    Navidrome            sockseek
-                    (Subsonic)      (Soulseek, repli)
+                    Navidrome            sockseek             yt-dlp
+                    (Subsonic)      (Soulseek, repli)  (YouTube Music, option)
                          ↓                    ↓
                  flux audio + métadonnées + LRClib
 ```
@@ -280,7 +330,7 @@ qrcode.js             # QR code, sans dépendance ni réseau
 public/               # player.html · admin.html · guest.html
 nginx.conf            # reverse proxy HTTP
 jukebox.service       # unité systemd             docker-compose.yml
-Dockerfile            # image (sockseek intégré)  docker-entrypoint.sh
+Dockerfile            # image (sockseek, yt-dlp)  docker-entrypoint.sh
 install.sh            # installation assistée     test-services.js
 ```
 

@@ -1,7 +1,9 @@
 #!/bin/sh
 # ============= JUKEBOX - DOCKER ENTRYPOINT =============
-# Version 1.2.0 - last updated: 22 October 2026
+# Version 1.3.0 - last updated: 29 October 2026
 # Changelog:
+#   1.3.0 - Startup line also shows the optional YouTube Music source
+#           (YOUTUBE_ENABLED, off unless set to true).
 #   1.2.0 - Each source is enabled as soon as its credentials are given:
 #           NAVIDROME_USER + NAVIDROME_PASS, SOULSEEK_USER + SOULSEEK_PASS
 #           (or a mounted sockseek.conf).
@@ -41,6 +43,7 @@ if [ -z "$SOULSEEK_ENABLED" ]; then
 fi
 export NAVIDROME_ENABLED SOULSEEK_ENABLED
 
-echo "Sources: Navidrome=$NAVIDROME_ENABLED, Soulseek=$SOULSEEK_ENABLED"
+# YouTube Music stays optional: enabled only by YOUTUBE_ENABLED=true
+echo "Sources: Navidrome=$NAVIDROME_ENABLED, Soulseek=$SOULSEEK_ENABLED, YouTube Music=${YOUTUBE_ENABLED:-false}"
 
 exec "$@"
